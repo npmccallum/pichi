@@ -161,6 +161,10 @@ the first build pulls it and continues. Full contract: [BUILD.md](BUILD.md).
 
 ## Workload supervision
 
+`attach`, `logs`, `wait`, and `stop` accept a full workload UUID or a unique ID
+prefix. Prefixes ignore case and hyphens; ambiguous prefixes are rejected before
+acting on a workload.
+
 Install `madrillo` and `dillo` on PATH. Dillo must support console closure
 requesting shutdown. Foreground run prints its
 ID on stderr; detached run prints it on stdout. `run -it` uses raw input on a host

@@ -270,6 +270,22 @@ impl Records {
         })
     }
 
+    /// Resolve a full UUID or a unique prefix before any workload operation.
+    pub(super) fn resolve(&self, selector: &str) -> Result<Record> {
+        if let Ok(id) = selector.parse::<Uuid>() {
+            return self.get(id);
+        }
+        let prefix = selector.replace('-', "").to_ascii_lowercase();
+        let mut matches = self.list()?.into_iter().filter(|record| {
+            !prefix.is_empty() && record.id().simple().to_string().starts_with(&prefix)
+        });
+        match (matches.next(), matches.next()) {
+            (Some(record), None) => Ok(record),
+            (Some(_), Some(_)) => bail!("workload prefix {selector:?} matches more than one ID"),
+            (None, _) => bail!("no workload matches ID prefix {selector:?}"),
+        }
+    }
+
     pub(super) fn list(&self) -> Result<Vec<Record>> {
         let mut records = Vec::new();
         for entry in self.directory.entries()? {
@@ -479,6 +495,52 @@ mod tests {
     use madrillo::{CompletionCause, LeaderResult, OomEvidence};
     use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
     use sha2::{Digest as _, Sha256};
+
+    #[test]
+    fn id_prefixes_are_unique_case_insensitive_and_ignore_hyphens() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let cache = root.path().join("cache");
+        std::fs::create_dir(&cache)?;
+        let records = Records::open(&cache)?;
+        let ids = [
+            "abcdefab-cdef-4123-8123-123456789abc".parse::<Uuid>()?,
+            "abcdefab-cdef-4567-8567-123456789abc".parse::<Uuid>()?,
+        ];
+        for id in ids {
+            records.create(
+                vec![Digest::Sha256([1; 32])],
+                root.path().join(id.to_string()),
+                id,
+            )?;
+        }
+        for selector in [
+            ids[0].to_string(),
+            ids[0].simple().to_string(),
+            "abcdefabcdef41".into(),
+            "ABCDEFAB-CDEF-41".into(),
+        ] {
+            assert_eq!(records.resolve(&selector)?.id(), ids[0]);
+        }
+        assert!(
+            records
+                .resolve("abcdefab")
+                .unwrap_err()
+                .to_string()
+                .contains("more than one ID")
+        );
+        for selector in ["deadbeef", "", "---"] {
+            assert!(
+                records
+                    .resolve(selector)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("no workload matches")
+            );
+        }
+        let absent = "abcdefab-cdef-4999-8999-123456789abc";
+        assert!(records.resolve(absent).is_err());
+        Ok(())
+    }
 
     #[test]
     fn storage_cleanup_requires_complete_evidence_and_is_idempotent() -> Result<()> {

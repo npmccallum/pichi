@@ -761,8 +761,13 @@ impl Running {
         ))
     }
 
-    pub(crate) async fn view(&mut self, record: &Record, interactive: bool) -> Result<u32> {
-        console::Console::open(interactive)?
+    pub(crate) async fn view(
+        &mut self,
+        record: &Record,
+        interactive: bool,
+        tty: bool,
+    ) -> Result<u32> {
+        console::Console::open(interactive, tty)?
             .view(&mut self.client, &record.resize_endpoint())
             .await
     }
@@ -953,7 +958,7 @@ impl Workload {
                 ServerMessage::Attached { input } if input == interactive => {}
                 response => bail!("attachment rejected: {response:?}"),
             }
-            console::Console::open(interactive)?
+            console::Console::open(interactive, interactive)?
                 .view(&mut client, &self.0.resize_endpoint())
                 .await
         }

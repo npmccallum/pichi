@@ -317,14 +317,16 @@ pub struct BuildArgs {
     /// Optional locator / provenance hint forwarded in the build-input CBOR.
     #[arg(long)]
     pub location: Option<String>,
-    /// Guest memory in MiB for the build VM (forwarded to dillo).
-    #[arg(long)]
+    /// Guest memory as `<number>[b|k|m|g]` (bare numbers are bytes),
+    /// a whole number of MiB (forwarded to dillo).
+    #[arg(long, short = 'm', value_parser = parse_mebibytes::<u32>)]
     pub memory: Option<u32>,
     /// vCPUs for the build VM (forwarded to dillo).
     #[arg(long)]
     pub cpus: Option<u32>,
-    /// Writable storage capacity in MiB for the build appliance.
-    #[arg(long)]
+    /// Writable storage capacity as `<number>[b|k|m|g]` (bare numbers are
+    /// bytes), a whole number of MiB.
+    #[arg(long, value_parser = parse_mebibytes::<u64>)]
     pub storage: Option<u64>,
     /// Suppress build output and print the image digest on success.
     #[arg(long, short = 'q')]
@@ -364,11 +366,13 @@ pub struct RunArgs {
     /// Number of vCPUs. Overrides operator and image defaults.
     #[arg(long)]
     pub cpus: Option<u32>,
-    /// Guest memory in MiB. Overrides operator and image defaults.
-    #[arg(long)]
+    /// Guest memory as `<number>[b|k|m|g]` (bare numbers are bytes),
+    /// a whole number of MiB. Overrides operator and image defaults.
+    #[arg(long, short = 'm', value_parser = parse_mebibytes::<u32>)]
     pub memory: Option<u32>,
-    /// Writable storage capacity in MiB. Overrides the image recommendation.
-    #[arg(long)]
+    /// Writable storage capacity as `<number>[b|k|m|g]` (bare numbers are
+    /// bytes), a whole number of MiB. Overrides the image recommendation.
+    #[arg(long, value_parser = parse_mebibytes::<u64>)]
     pub storage: Option<u64>,
     /// Retain storage in this raw file; otherwise use disposable storage.
     #[arg(long, value_name = "PATH")]
@@ -414,6 +418,39 @@ impl TryFrom<ImportRawArgs> for crate::cmd::import::raw::ImportArgs {
             annotations,
         })
     }
+}
+
+/// Parse CLI byte sizes into the existing memory/storage MiB fields.
+fn parse_mebibytes<T: TryFrom<u64>>(size: &str) -> Result<T, String> {
+    const MIB: u64 = 1024 * 1024;
+    let digits = size
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(size.len());
+    let (number, unit) = size.split_at(digits);
+    let unit = match unit {
+        "" | "b" | "B" => 1,
+        "k" | "K" => 1024,
+        "m" | "M" => MIB,
+        "g" | "G" => 1024 * MIB,
+        _ => {
+            return Err(format!(
+                "invalid size {size:?}: use <number>[b|k|m|g], for example 512m or 2g"
+            ));
+        }
+    };
+    let bytes = number
+        .parse::<u64>()
+        .map_err(|_| {
+            format!("invalid size {size:?}: use <number>[b|k|m|g], for example 512m or 2g")
+        })?
+        .checked_mul(unit)
+        .ok_or_else(|| format!("size {size:?} is too large"))?;
+    if !bytes.is_multiple_of(MIB) {
+        return Err(format!(
+            "size {size:?} is not a whole number of MiB; a bare number is bytes, so write 1024m or 1g"
+        ));
+    }
+    T::try_from(bytes / MIB).map_err(|_| format!("size {size:?} is too large"))
 }
 
 /// Reject rooted paths: `-p`/`--plan` is relative to the selected directory.

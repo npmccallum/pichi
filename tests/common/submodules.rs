@@ -222,7 +222,7 @@ impl SubmoduleFixture {
                 "-t",
                 tag,
                 "--memory",
-                "2048",
+                "2048m",
                 "--cpus",
                 "1",
             ])

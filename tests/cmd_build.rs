@@ -88,6 +88,52 @@ fn build_help_documents_plan_context_and_defaults() {
 }
 
 #[test]
+fn build_sizes_accept_bytes_and_units_without_rounding() {
+    let parse = |extra: &[&str]| {
+        let mut argv = vec!["build", "."];
+        argv.extend(extra);
+        BuildArgs::augment_args(clap::Command::new("build"))
+            .try_get_matches_from(argv)
+            .map(|matches| BuildArgs::from_arg_matches(&matches).unwrap())
+    };
+    for (text, mib) in [
+        ("1048576", 1),
+        ("1048576B", 1),
+        ("1024k", 1),
+        ("1024K", 1),
+        ("512m", 512),
+        ("512M", 512),
+        ("3g", 3072),
+        ("3G", 3072),
+        ("0", 0),
+    ] {
+        let args = parse(&["-m", text, "--storage", text]).unwrap();
+        assert_eq!(args.memory, Some(mib), "{text}");
+        assert_eq!(args.storage, Some(u64::from(mib)), "{text}");
+    }
+    for flag in ["--memory", "--storage"] {
+        for invalid in [
+            "",
+            "m",
+            "1.5g",
+            "1mb",
+            "1t",
+            "18446744073709551616",
+            "17179869184g",
+        ] {
+            assert!(parse(&[flag, invalid]).is_err(), "{flag} {invalid:?}");
+        }
+        let error = parse(&[flag, "1024"]).unwrap_err().to_string();
+        assert!(error.contains("whole number of MiB"), "{error}");
+    }
+    assert!(parse(&["--memory", "4294967296m"]).is_err());
+    assert_eq!(
+        parse(&["--storage", "4294967296m"]).unwrap().storage,
+        Some(4294967296),
+    );
+}
+
+#[test]
 fn build_context_defaults_to_current_directory() {
     for (extra, expected) in [(vec![], "."), (vec!["--context", "plans/app"], "plans/app")] {
         let mut argv = vec!["build", ".", "--ref", "main"];

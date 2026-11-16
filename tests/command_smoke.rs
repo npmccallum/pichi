@@ -255,7 +255,7 @@ impl Smoke {
                 "--build-image",
                 "qualification.local/builder:smoke",
                 "--memory",
-                "3584",
+                "3584m",
                 "--cpus",
                 "1",
                 "-t",
@@ -269,7 +269,7 @@ impl Smoke {
         );
         let boot = self.run(
             "run",
-            &["run", "smoke:output", "--memory", "2048", "--cpus", "1"],
+            &["run", "smoke:output", "--memory", "2048m", "--cpus", "1"],
         );
         assert!(
             boot.contains("PICHI_SMOKE_OK"),

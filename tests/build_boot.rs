@@ -140,7 +140,7 @@ async fn pichi_build_boots_official_image_to_poweroff() {
             "--build-image",
             common::build_image(),
             "--memory",
-            "2048",
+            "2048m",
             "--cpus",
             "1",
         ])

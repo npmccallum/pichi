@@ -547,7 +547,7 @@ async fn run_forwards_cpus_and_memory() {
         .unwrap()
         .env("XDG_DATA_HOME", tmp.path())
         .env("PATH", executable_path::prepend(stub.parent().unwrap()))
-        .args(["run", "--cpus", "2", "--memory", "2048", "myapp:1"])
+        .args(["run", "--cpus", "2", "--memory", "2048m", "myapp:1"])
         .assert()
         .success();
 
@@ -624,7 +624,7 @@ async fn image_config_defaults_and_manual_allocations_are_enforced() {
     let stub = make_stub_dillo(tmp.path());
     for (extra, cpus, memory, warning) in [
         (vec![], "8", "1024", false),
-        (vec!["--cpus", "4", "--memory", "768"], "4", "768", true),
+        (vec!["--cpus", "4", "--memory", "768m"], "4", "768", true),
     ] {
         let mut command = Command::cargo_bin("pichi").unwrap();
         command
@@ -696,7 +696,7 @@ async fn detached_storage_stays_reserved_until_workload_exit() {
             .env("XDG_DATA_HOME", tmp.path())
             .env("PATH", executable_path::prepend(stub.parent().unwrap()))
             .env("PICHI_TEST_STORAGE", "1")
-            .args(["run", "-d", "--storage", "2", "storage:detached"]);
+            .args(["run", "-d", "--storage", "2m", "storage:detached"]);
         if retained {
             command
                 .arg("--storage-file")
@@ -784,7 +784,7 @@ async fn vm_timeout_cleanup_stops_workloads_after_client_exit() {
             .env("PATH", executable_path::prepend(stub.parent().unwrap()))
             .env("PICHI_TEST_STORAGE", "1")
             .env("PICHI_TEST_DILLO_WAIT_FOR_EOF", "1")
-            .args(["run", "--storage", "2", "--storage-file"])
+            .args(["run", "--storage", "2m", "--storage-file"])
             .arg(&disk)
             .arg("cleanup:1")
             .stdin(Stdio::null())

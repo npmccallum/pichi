@@ -172,6 +172,11 @@ On Unix, control and resize sockets use the native temporary directory (`TMPDIR`
 when supplied). Their addresses are retained with the workload, so later clients
 can use a different environment. The directory must allow Unix sockets and leave
 room for their names within the operating system's socket-path limit.
+A slow guest backpressures input without a write deadline. The attachment keeps
+receiving output and completion and handling resize and caller signals while a
+write waits. Input read-ahead is bounded. Once input is closed, attachments keep
+receiving output; terminal detach discards unsent input and leaves the VM running.
+
 An interactive terminal sends its initial dimensions and subsequent changes
 directly to Dillo's private resize endpoint. Reattachment supplies the new
 terminal's dimensions, including after a detached launch. Each input-forwarding

@@ -10,13 +10,70 @@ use interprocess::local_socket::{
     tokio::{Stream, prelude::*},
 };
 use madrillo::{ClientMessage, PROTOCOL_VERSION, Request, Response, ServerMessage};
-use std::{path::Path, time::Duration};
-use tokio_util::codec::{Framed, LengthDelimitedCodec};
+use std::{path::Path, pin::Pin, task, time::Duration};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf, ReadHalf, WriteHalf};
+use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 
 const MAX_FRAME: usize = 1024 * 1024;
 
+/// The monitor's stream, which on Windows must not flush when dropped.
 #[derive(Debug)]
-pub(super) struct Client(Framed<Stream, LengthDelimitedCodec>);
+struct Wire(Stream);
+
+impl AsyncRead for Wire {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut task::Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> task::Poll<std::io::Result<()>> {
+        Pin::new(&mut self.0).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for Wire {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut task::Context<'_>,
+        bytes: &[u8],
+    ) -> task::Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.0).poll_write(cx, bytes)
+    }
+    fn poll_flush(
+        mut self: Pin<&mut Self>,
+        cx: &mut task::Context<'_>,
+    ) -> task::Poll<std::io::Result<()>> {
+        Pin::new(&mut self.0).poll_flush(cx)
+    }
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        cx: &mut task::Context<'_>,
+    ) -> task::Poll<std::io::Result<()>> {
+        Pin::new(&mut self.0).poll_shutdown(cx)
+    }
+}
+
+#[cfg(windows)]
+impl Drop for Wire {
+    fn drop(&mut self) {
+        let Stream::NamedPipe(pipe) = &self.0;
+        pipe.inner().assume_flushed();
+    }
+}
+
+/// Requests to the monitor. Dropping it closes the write side's half of the
+/// connection only once the receiving half is gone too.
+#[derive(Debug)]
+pub(super) struct Sender(FramedWrite<WriteHalf<Wire>, LengthDelimitedCodec>);
+
+/// The monitor's responses.
+#[derive(Debug)]
+pub(super) struct Receiver(FramedRead<ReadHalf<Wire>, LengthDelimitedCodec>);
+
+#[derive(Debug)]
+pub(super) struct Client {
+    sender: Sender,
+    receiver: Receiver,
+}
 
 impl Client {
     pub(super) async fn connect(path: &Path) -> Result<Self> {
@@ -50,13 +107,40 @@ impl Client {
     }
 
     pub(super) fn new(stream: Stream) -> Self {
-        Self(
+        let (read, write) = tokio::io::split(Wire(stream));
+        let codec = || {
             LengthDelimitedCodec::builder()
                 .max_frame_length(MAX_FRAME)
-                .new_framed(stream),
-        )
+                .new_codec()
+        };
+        Self {
+            sender: Sender(FramedWrite::new(write, codec())),
+            receiver: Receiver(FramedRead::new(read, codec())),
+        }
     }
 
+    /// The two directions, to be used at the same time.
+    pub(super) fn halves(&mut self) -> (&mut Sender, &mut Receiver) {
+        (&mut self.sender, &mut self.receiver)
+    }
+
+    /// Send a request that the monitor answers at once; it is given up on
+    /// after a deadline.
+    pub(super) async fn send(&mut self, message: ClientMessage) -> Result<()> {
+        tokio::time::timeout(Duration::from_secs(5), self.sender.send(message))
+            .await
+            .context("monitor control write deadline")?
+    }
+
+    // Framed retains partially received bytes when a select branch is cancelled.
+    pub(super) async fn next(&mut self) -> Result<ServerMessage> {
+        self.receiver.next().await
+    }
+}
+
+impl Sender {
+    /// Send without a deadline: the monitor may take as long as the guest
+    /// does to read what an attachment sends.
     pub(super) async fn send(&mut self, message: ClientMessage) -> Result<()> {
         let frame = serde_json::to_vec(&Request {
             version: PROTOCOL_VERSION,
@@ -65,16 +149,12 @@ impl Client {
         if frame.len() > MAX_FRAME {
             bail!("monitor request exceeds frame limit");
         }
-        tokio::time::timeout(
-            Duration::from_secs(5),
-            self.0.send(bytes::Bytes::from(frame)),
-        )
-        .await
-        .context("monitor control write deadline")??;
+        self.0.send(bytes::Bytes::from(frame)).await?;
         Ok(())
     }
+}
 
-    // Framed retains partially received bytes when a select branch is cancelled.
+impl Receiver {
     pub(super) async fn next(&mut self) -> Result<ServerMessage> {
         let frame = self
             .0
@@ -86,13 +166,5 @@ impl Client {
             bail!("unsupported monitor protocol {}", response.version);
         }
         Ok(response.message)
-    }
-}
-
-#[cfg(windows)]
-impl Drop for Client {
-    fn drop(&mut self) {
-        let Stream::NamedPipe(pipe) = self.0.get_ref();
-        pipe.inner().assume_flushed();
     }
 }

@@ -202,6 +202,8 @@ struct Signals {
     #[cfg(unix)]
     terminate: tokio::signal::unix::Signal,
     #[cfg(unix)]
+    quit: tokio::signal::unix::Signal,
+    #[cfg(unix)]
     hangup: tokio::signal::unix::Signal,
 }
 
@@ -213,6 +215,8 @@ impl Signals {
             #[cfg(unix)]
             terminate: tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?,
             #[cfg(unix)]
+            quit: tokio::signal::unix::signal(tokio::signal::unix::SignalKind::quit())?,
+            #[cfg(unix)]
             hangup: tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?,
         })
     }
@@ -222,6 +226,7 @@ impl Signals {
         tokio::select! {
             _ = self.interrupt.recv() => Ok(130),
             _ = self.terminate.recv() => Ok(143),
+            _ = self.quit.recv() => Ok(131),
             _ = self.hangup.recv() => Ok(129),
         }
     }

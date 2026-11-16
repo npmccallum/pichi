@@ -684,14 +684,11 @@ time.sleep(1.5)
 os.write(1, b'late\n')
 while not os.path.exists(os.environ['READ_GATE']): time.sleep(0.01)
 total = 0
-started = time.monotonic()
 while total < int(os.environ['INPUT_SIZE']):
     data = os.read(0, min(65536, int(os.environ['INPUT_SIZE']) - total))
     assert data, 'input ended before all bytes arrived'
     assert data == b'z' * len(data)
     total += len(data)
-    if total % (128 * 1024) == 0:
-        os.write(2, f'received={total} elapsed={time.monotonic() - started:.3f}\n'.encode())
 os.write(1, f'count={total}\n'.encode())
 ",
     )

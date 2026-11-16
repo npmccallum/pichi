@@ -19,6 +19,8 @@ fn usage_and_command_errors_exit_125() {
             .unwrap()
             .env("XDG_DATA_HOME", root.path())
             .env("XDG_CONFIG_HOME", root.path())
+            .env("LOCALAPPDATA", root.path())
+            .env("APPDATA", root.path())
             .args(args)
             .assert()
             .code(125);
@@ -33,6 +35,7 @@ fn configuration_errors_exit_125_but_help_and_version_succeed() {
     let failed = Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_CONFIG_HOME", root.path())
+        .env("APPDATA", root.path())
         .args(["system", "info"])
         .assert()
         .code(125);
@@ -44,6 +47,7 @@ fn configuration_errors_exit_125_but_help_and_version_succeed() {
         Command::cargo_bin("pichi")
             .unwrap()
             .env("XDG_CONFIG_HOME", root.path())
+            .env("APPDATA", root.path())
             .args(args)
             .assert()
             .success();

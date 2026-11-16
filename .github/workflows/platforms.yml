@@ -203,7 +203,7 @@ jobs:
             done
           done
           "${pichi[@]}" build . --ref HEAD --plan appliance/image/pichi.yaml --lock appliance/image/pichi.lock \
-            --memory 8192 -t qualification.local/appliance:build
+            --memory 8192m -t qualification.local/appliance:build
           rm -rf tests/fixtures/appliance-layout
           "${pichi[@]}" save qualification.local/appliance:build -o tests/fixtures/appliance-layout
 

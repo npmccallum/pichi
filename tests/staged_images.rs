@@ -153,7 +153,7 @@ fn staged_images_create_extend_and_compose() {
             "run",
             "qualification.local/unsupported-transport:1",
             "--memory",
-            "2048",
+            "2048m",
             "--cpus",
             "1",
         ],
@@ -167,7 +167,7 @@ fn staged_images_create_extend_and_compose() {
     let undersized = common::pichi(
         &builds.cache,
         &[],
-        &["run", "qualification.local/bootable:1", "--memory", "512"],
+        &["run", "qualification.local/bootable:1", "--memory", "512m"],
     );
     assert!(!undersized.status.success());
     assert!(

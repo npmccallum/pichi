@@ -66,7 +66,7 @@ image. The distribution decides how to format and mount it. Disposable storage
 is removed after the VM exits. To retain it across runs, provide a raw file:
 
 ```sh
-pichi run example:1 --cpus 4 --memory 4096 --storage 8192 \
+pichi run example:1 --cpus 4 --memory 4g --storage 8g \
   --storage-file /path/to/instance.raw
 ```
 
@@ -75,7 +75,13 @@ backing lives in the private workload record. A completion callback removes it
 only after confirmed workload cleanup; `wait` and `stop` retry that cleanup.
 Missing or incomplete results preserve the backing for reconciliation.
 
-Sizes are in MiB. `run.storage_file` can configure the retained file. Pichi
+`-m/--memory` and `--storage` accept `<number>[b|k|m|g]` (bytes, KiB, MiB,
+GiB; units are case-insensitive). Bare numbers are bytes, so replace an old
+`--memory 1024` invocation with `--memory 1024m` or `--memory 1g`. Values must
+be whole numbers of MiB. `run` and `build` use the same syntax; configuration
+keys `run.memory_mib` and `run.storage_mib` remain in MiB.
+
+`run.storage_file` can configure the retained file. Pichi
 locks retained storage against concurrent use, preserves existing contents,
 and refuses to shrink it. A supplied file's existing capacity is an operator
 allocation when no explicit size is set.
@@ -89,7 +95,7 @@ platform cannot satisfy the request.
 can access it directly, for example
 `pichi inspect example:1 --format '{{ config.requirements.storage.recommended }}'`.
 
-Builds use the build appliance's requirements. `pichi build --storage <MiB>`
+Builds use the build appliance's requirements. `pichi build --storage <size>`
 overrides its recommended storage allocation; output-image requirements remain
 metadata for later launches.
 

@@ -35,7 +35,7 @@ is still a valid image — a base others derive from.
 | `pichi tag` / `rmi` | Manage tags (refcount-aware blob GC) |
 | `pichi pull` / `push` | Move artifacts to and from an OCI registry |
 | `pichi run` | Boot an artifact under madrillo; `-d` prints a durable workload ID, `-i` forwards stdin |
-| `pichi attach` | Attach to live console output; `-i` also acquires input |
+| `pichi attach` | Attach to live console output; `-i` also forwards input |
 | `pichi logs` | Print a snapshot of retained stdout/stderr for a workload ID |
 | `pichi wait` | Wait for a workload ID and print its native exit status |
 | `pichi stop` | Request console shutdown; force cleanup after `--time` seconds (default 10) |
@@ -160,8 +160,9 @@ the first build pulls it and continues. Full contract: [BUILD.md](BUILD.md).
 Install `madrillo` and `dillo` on PATH. Dillo must support console closure
 requesting shutdown. Foreground run prints its
 ID on stderr; detached run prints it on stdout. Host terminals use raw input with
-`-i`; Ctrl-P Ctrl-Q detaches. Piped input remains binary. Input EOF releases
-ownership while madrillo keeps dillo's liveness pipe open. Attachment is live
+`-i`; Ctrl-P Ctrl-Q detaches. Piped input remains binary. Multiple interactive
+attachments may write input. Input EOF releases that attachment's input while
+madrillo keeps dillo's liveness pipe open. Attachment is live
 only; completed workloads retain their result and configured CRI console log.
 On Unix, control and resize sockets use the native temporary directory (`TMPDIR`
 when supplied). Their addresses are retained with the workload, so later clients
@@ -169,8 +170,8 @@ can use a different environment. The directory must allow Unix sockets and leave
 room for their names within the operating system's socket-path limit.
 An interactive terminal sends its initial dimensions and subsequent changes
 directly to Dillo's private resize endpoint. Reattachment supplies the new
-terminal's dimensions, including after a detached launch. Only the input owner
-can resize; output-only attachments and piped input do not change guest size.
+terminal's dimensions, including after a detached launch. Each input-forwarding
+terminal can resize; output-only attachments and piped input do not change guest size.
 Madrillo does not interpret these updates. Guest resize requires Linux's
 [virtio-console cols/rows fix](https://github.com/torvalds/linux/commit/5326ab737a47278dbd16ed3ee7380b26c7056ddd)
 or a backport; older kernels interpret the standard dimensions in reverse.
@@ -182,7 +183,7 @@ complete CRI records present when the file is opened; a record still being
 written appears on a later invocation. Logs remain available after monitor exit
 or loss, independently of the live attachment endpoint.
 `pichi stop ID` closes Dillo's console input to request clean shutdown, even
-while another client owns input. After 10 seconds it asks madrillo to force
+while other clients forward input. After 10 seconds it asks madrillo to force
 workload cleanup; `--time SECONDS` changes that grace period and `--time 0`
 forces immediately. It prints the ID after confirmed exit. Stopping an exited
 workload succeeds using its retained result. The original workload exit status

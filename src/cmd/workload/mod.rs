@@ -486,7 +486,6 @@ mod tests {
             .await?;
         let reply = tokio::time::timeout(Duration::from_secs(5), running.client.next()).await??;
         assert!(matches!(reply, ServerMessage::Output { bytes, .. } if bytes == payload));
-        running.client.send(ClientMessage::InputEnd).await?;
         let mut attached = Client::connect(&endpoint).await?;
         attached
             .send(ClientMessage::Attach {
@@ -498,7 +497,34 @@ mod tests {
             attached.next().await?,
             ServerMessage::Attached { input: true }
         );
-        // Administrative shutdown must work while this attachment still owns input.
+        // Both attachments may write; releasing one must leave the other usable.
+        for release_initial in [false, true] {
+            if release_initial {
+                running.client.send(ClientMessage::InputEnd).await?;
+                // An ordered reply confirms release before the other client writes.
+                running
+                    .client
+                    .send(ClientMessage::Attach {
+                        input: false,
+                        streams: Vec::new(),
+                    })
+                    .await?;
+                assert_eq!(
+                    running.client.next().await?,
+                    ServerMessage::Attached { input: false }
+                );
+            }
+            attached
+                .send(ClientMessage::Input {
+                    bytes: payload.to_vec(),
+                })
+                .await?;
+            for client in [&mut running.client, &mut attached] {
+                let reply = tokio::time::timeout(Duration::from_secs(5), client.next()).await??;
+                assert!(matches!(reply, ServerMessage::Output { bytes, .. } if bytes == payload));
+            }
+        }
+        // Administrative shutdown must work while an attachment still forwards input.
         let workload = Workload(records.get(record.id())?);
         let stopped = workload.stop(Duration::from_secs(5)).await?;
         assert_eq!(stopped.0.leader, LeaderResult::Exit { code: 0 });

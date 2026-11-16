@@ -3,7 +3,7 @@
 
 //! Host console attachment. EOF releases input; the monitor retains its writer.
 
-use super::{Client, Outcome, client::Sender};
+use super::{Client, Outcome};
 use anyhow::{Context, Result, bail};
 use madrillo::{ClientMessage, ErrorCode, ServerMessage};
 use std::collections::VecDeque;
@@ -134,14 +134,15 @@ impl Console {
         tokio::pin!(resize);
         let mut staged = VecDeque::new();
         let mut idle = Some(writer);
-        let mut flight: Option<SendInFlight<'_>> = None;
+        // Keep a partially sent frame alive across select iterations.
+        let mut flight = std::pin::pin!(None);
         let mut forward = self.interactive;
         loop {
             if flight.is_none()
                 && let Some(message) = staged.pop_front()
                 && let Some(writer) = idle.take()
             {
-                flight = Some(Box::pin(async move {
+                flight.set(Some(async move {
                     let sent = writer.send(message).await;
                     (writer, sent)
                 }));
@@ -161,8 +162,8 @@ impl Console {
                     ServerMessage::Error { code, message } => bail!("monitor {code:?}: {message}"),
                     response => bail!("unexpected monitor response: {response:?}"),
                 },
-                (writer, sent) = async { flight.as_mut().expect("guard").await }, if flight.is_some() => {
-                    flight = None;
+                (writer, sent) = async { flight.as_mut().as_pin_mut().expect("guard").await }, if flight.is_some() => {
+                    flight.set(None);
                     idle = Some(writer);
                     sent?;
                 },
@@ -194,11 +195,6 @@ impl Console {
         }
     }
 }
-
-/// Keep a write alive across select iterations; cancellation must not lose
-/// a partially sent frame. The sender is returned when the write finishes.
-type SendInFlight<'a> =
-    std::pin::Pin<Box<dyn std::future::Future<Output = (&'a mut Sender, Result<()>)> + Send + 'a>>;
 
 struct Signals {
     #[cfg(unix)]

@@ -17,6 +17,9 @@ use clap::{Parser, Subcommand};
 
 use pichi::{cli, cmd, config, system};
 
+/// Pichi's own failures follow Podman's exit-status convention.
+const EXIT_ERROR: u32 = 125;
+
 /// pichi: image management for the pichi VM ecosystem.
 #[derive(Parser)]
 #[command(version)]
@@ -85,10 +88,25 @@ enum Command {
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<NativeExit> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
+async fn main() -> NativeExit {
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(error) => {
+            let _ = error.print();
+            return NativeExit(if error.use_stderr() { EXIT_ERROR } else { 0 });
+        }
+    };
+    match run(cli).await {
+        Ok(exit) => exit,
+        Err(error) => {
+            eprintln!("Error: {error:?}");
+            NativeExit(EXIT_ERROR)
+        }
+    }
+}
 
-    let cli = Cli::parse();
+async fn run(cli: Cli) -> anyhow::Result<NativeExit> {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
 
     let config = if matches!(cli.command, Command::CleanupWorkload { .. }) {
         config::Config::default()

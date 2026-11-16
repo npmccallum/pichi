@@ -46,6 +46,10 @@ is still a valid image — a base others derive from.
 
 Run `pichi <command> --help` for details.
 
+Pichi's own usage, configuration and command errors exit with status 125.
+Help and version requests exit with status 0. Foreground `run` and `attach`
+preserve the VM's native exit status.
+
 ## Launch requirements
 
 The image config's recommended CPU, memory and storage sizes supply the run

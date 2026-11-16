@@ -178,7 +178,7 @@ fn errors_preserve_the_lock_and_retired_options_are_rejected() {
     }
     for flag in ["--ref", "--context", "--conglobate"] {
         let output = project.run(&["update", flag, "unused"]);
-        assert_eq!(output.status.code(), Some(2));
+        assert_eq!(output.status.code(), Some(125));
         assert!(String::from_utf8_lossy(&output.stderr).contains("unexpected argument"));
     }
     let help = Project::success(project.run(&["update", "--help"]));

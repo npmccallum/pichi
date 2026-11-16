@@ -4,6 +4,7 @@
 """Native Unix terminal frontend acceptance; launched by cmd_workload.rs."""
 import fcntl
 import os
+import json
 from pathlib import Path
 import pty
 import select
@@ -102,7 +103,7 @@ class Terminal:
 
 records = Path(os.environ["XDG_DATA_HOME"]) / "pichi/storage.workloads"
 try:
-    with Terminal(["run", "-i", "fixture:1"]) as terminal:
+    with Terminal(["run", "-it", "fixture:1"]) as terminal:
         startup = terminal.receive(b"console-ready")
         startup += terminal.receive(b"size=300x77")
         assert b"console resize:" not in startup, startup
@@ -110,6 +111,8 @@ try:
         terminal.receive(b"size=120x41")
         record, = records.iterdir()
         identity = record.name
+        attempt = json.loads((record / "identity.json").read_text())["attempt"]["id"]
+        run = record / "runs" / attempt
         flags = termios.tcgetattr(terminal.slave)[3]
         assert not flags & (termios.ICANON | termios.ECHO | termios.ISIG), "not raw mode"
         payload = b"\x03\x04\x00\xff"
@@ -119,26 +122,26 @@ try:
         terminal.receive(b"\x10x")
         terminal.send(b"\x11")
         terminal.restored(0)
-    assert not (record / "monitor/result.json").exists(), "detach stopped the workload"
+    assert not (run / "monitor/result.json").exists(), "detach stopped the workload"
 
-    with Terminal(["attach", "-i", identity], size=(81, 25)) as terminal:
+    with Terminal(["attach", identity], size=(81, 25)) as terminal:
         terminal.receive(b"size=81x25")
         terminal.send(b"after-detach\n")
         terminal.receive(b"after-detach")
         os.killpg(terminal.process.pid, signal.SIGTERM)
         terminal.restored(143)
-    assert not (record / "monitor/result.json").exists(), "caller signal stopped the workload"
+    assert not (run / "monitor/result.json").exists(), "caller signal stopped the workload"
 
-    with Terminal(["attach", "-i", identity], check_restoration=False) as terminal:
+    with Terminal(["attach", identity], check_restoration=False) as terminal:
         # A binary control byte cannot be satisfied by the host's cooked echo.
         terminal.send(b"terminal-loss\x03\n")
         terminal.receive(b"terminal-loss\x03")
         assert terminal.process.poll() is None
         terminal.disconnect()
         terminal.process.wait(timeout=5)
-    assert not (record / "monitor/result.json").exists(), "terminal loss stopped the workload"
+    assert not (run / "monitor/result.json").exists(), "terminal loss stopped the workload"
 
-    with Terminal(["attach", "-i", identity]) as terminal:
+    with Terminal(["attach", identity]) as terminal:
         terminal.send(b"reattached\x03\n")
         terminal.receive(b"reattached\x03")
         stopped = subprocess.run([sys.argv[1], "stop", identity],
@@ -146,14 +149,25 @@ try:
         assert stopped.returncode == 0, stopped.stderr
         terminal.restored(0)
     # A workload launched detached acquires its first size on later attachment.
-    started = subprocess.run([sys.argv[1], "run", "-d", "fixture:1"],
+    started = subprocess.run([sys.argv[1], "run", "-dt", "fixture:1"],
                              capture_output=True, timeout=5)
     assert started.returncode == 0, started.stderr
     identity = started.stdout.decode().strip()
-    with Terminal(["attach", "-i", identity], size=(132, 43)) as terminal:
+    with Terminal(["attach", identity], size=(132, 43)) as terminal:
         terminal.receive(b"size=132x43")
+        assert termios.tcgetattr(terminal.slave)[3] & termios.ICANON, "raw without stdin"
         stopped = subprocess.run([sys.argv[1], "stop", identity],
                                  capture_output=True, timeout=10)
+        assert stopped.returncode == 0, stopped.stderr
+        terminal.restored(0)
+    known = {record.name for record in records.iterdir()}
+    with Terminal(["run", "-i", "fixture:1"], size=(90, 30)) as terminal:
+        terminal.receive(b"console-ready")
+        time.sleep(0.5)
+        assert termios.tcgetattr(terminal.slave)[3] & termios.ICANON, "raw without -t"
+        assert b"size=" not in terminal.output, terminal.output
+        identity, = {record.name for record in records.iterdir()} - known
+        stopped = subprocess.run([sys.argv[1], "stop", identity], capture_output=True, timeout=10)
         assert stopped.returncode == 0, stopped.stderr
         terminal.restored(0)
     print("native terminal: initial size, resize, detached start, control bytes, detach, signal restoration, hangup survival, reattach and normal-exit restoration passed")

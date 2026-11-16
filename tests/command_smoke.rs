@@ -290,6 +290,16 @@ impl Smoke {
         assert_eq!(self.run("wait", &["wait", &id]).trim(), "0");
         assert_eq!(self.run("stop", &["stop", &id]).trim(), id);
         self.run("attach-exited", &["attach", &id]);
+        // The guest's flushed write must survive a boot of this same disk.
+        assert!(boot.contains("PICHI_SMOKE_BOOT=1"), "{boot}");
+        let again = self.run("start", &["start", "--attach", &id]);
+        assert!(again.contains("PICHI_SMOKE_BOOT=2"), "{again}");
+        assert!(
+            self.run("logs", &["logs", &id])
+                .contains("PICHI_SMOKE_BOOT=2")
+        );
+        assert_eq!(self.run("rm", &["rm", &id]).trim(), id);
+        assert!(!self.run("ps", &["ps"]).contains(&id));
     }
 }
 

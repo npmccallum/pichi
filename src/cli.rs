@@ -350,16 +350,26 @@ pub struct UpdateArgs {
     pub pull: PullPolicy,
 }
 
-/// Args for `pichi run <ref>` — boot an artifact (auto-pulling if not cached).
+/// Create and start a persistent instance.
 #[derive(Debug, ClapArgs)]
 pub struct RunArgs {
-    /// Forward stdin; a host terminal uses raw mode and Ctrl-P Ctrl-Q detaches.
+    #[command(flatten)]
+    pub create: CreateArgs,
+    /// Start independently and print the instance ID.
+    #[arg(long, short = 'd')]
+    pub detach: bool,
+}
+
+/// Create a persistent instance without booting it.
+#[derive(Debug, ClapArgs)]
+pub struct CreateArgs {
+    /// Forward stdin when attached.
     #[arg(long, short = 'i')]
     pub interactive: bool,
 
-    /// Start independently and print the workload ID.
-    #[arg(long, short = 'd')]
-    pub detach: bool,
+    /// Use terminal mode when attached to a host terminal.
+    #[arg(long, short = 't')]
+    pub tty: bool,
 
     /// Image reference to boot (`image:tag` or `image@sha256:...`).
     pub reference: String,
@@ -374,16 +384,32 @@ pub struct RunArgs {
     /// bytes), a whole number of MiB. Overrides the image recommendation.
     #[arg(long, value_parser = parse_mebibytes::<u64>)]
     pub storage: Option<u64>,
-    /// Retain storage in this raw file; otherwise use disposable storage.
-    #[arg(long, value_name = "PATH")]
+    /// Retired option; reject it before creating an instance.
+    #[arg(long, hide = true, value_name = "PATH", value_parser = reject_storage_file)]
     pub storage_file: Option<std::path::PathBuf>,
+}
+
+/// Start an existing instance using its saved image, resources and disk.
+#[derive(Debug, ClapArgs)]
+pub struct StartArgs {
+    pub id: uuid::Uuid,
+    /// Show the console and return the VM's exit status.
+    #[arg(long, short = 'a')]
+    pub attach: bool,
+    /// Forward stdin while attached.
+    #[arg(long, short = 'i', requires = "attach")]
+    pub interactive: bool,
+}
+
+fn reject_storage_file(_: &str) -> Result<std::path::PathBuf, String> {
+    Err("--storage-file is no longer supported: use pichi create and pichi start for an instance-owned persistent disk; existing files are left untouched and are not imported".into())
 }
 
 /// Attach to an existing workload's live console.
 #[derive(Debug, ClapArgs)]
 pub struct AttachArgs {
     pub id: uuid::Uuid,
-    /// Forward stdin; a host terminal uses raw mode and Ctrl-P Ctrl-Q detaches.
+    /// Forward stdin, also enabled by the saved -i setting. Raw mode requires saved -t.
     #[arg(long, short = 'i')]
     pub interactive: bool,
 }

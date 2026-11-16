@@ -34,26 +34,59 @@ impl ChildExt for Child {
         for record in records {
             let stopped = (|| {
                 let record = record?;
-                let mut stop = Command::new(env!("CARGO_BIN_EXE_pichi"))
+                let identity: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(record.path().join("identity.json"))?)
+                        .map_err(io::Error::other)?;
+                let run = match identity["version"].as_u64() {
+                    Some(1) => Some(record.path()),
+                    Some(2) => match identity.get("attempt") {
+                        Some(serde_json::Value::Null) => None,
+                        Some(attempt) => {
+                            let id = attempt["id"]
+                                .as_str()
+                                .ok_or_else(|| io::Error::other("missing boot ID"))?
+                                .parse::<uuid::Uuid>()
+                                .map_err(io::Error::other)?;
+                            Some(record.path().join("runs").join(id.to_string()))
+                        }
+                        None => return Err(io::Error::other("missing instance attempt field")),
+                    },
+                    _ => return Err(io::Error::other("unknown workload record version")),
+                };
+                // A never-started instance still needs complete identity
+                // validation and proof of a free lifetime lock. Product rm
+                // provides both; an absent attempt alone proves neither.
+                let arguments: &[&str] = if run.is_some() {
+                    &["stop", "--time", "0"]
+                } else {
+                    &["rm"]
+                };
+                let mut control = Command::new(env!("CARGO_BIN_EXE_pichi"))
                     .env("XDG_DATA_HOME", data_home)
-                    .args(["stop", "--time", "0"])
+                    .args(arguments)
                     .arg(record.file_name())
                     .stdin(Stdio::null())
                     .stdout(Stdio::null())
                     .spawn()?;
-                // The product's forced-stop deadline is 30 seconds.
-                if stop.wait_timeout(Duration::from_secs(35))?.is_none() {
-                    stop.kill()?;
-                    stop.wait()?;
+                // The product's forced-stop deadline is 30 seconds. Bound
+                // removal too, since another client can hold the start gate.
+                let Some(status) = control.wait_timeout(Duration::from_secs(35))? else {
+                    control.kill()?;
+                    control.wait()?;
                     return Err(io::Error::new(
                         io::ErrorKind::TimedOut,
                         "workload cleanup deadline",
                     ));
-                }
-                let result: madrillo::Completion = serde_json::from_slice(&std::fs::read(
-                    record.path().join("monitor/result.json"),
-                )?)
-                .map_err(io::Error::other)?;
+                };
+                let Some(run) = run else {
+                    if !status.success() {
+                        return Err(io::Error::other("unstarted instance cleanup failed"));
+                    }
+                    return Ok(());
+                };
+                let result: madrillo::Completion =
+                    serde_json::from_slice(&std::fs::read(run.join("monitor/result.json"))?)
+                        .map_err(io::Error::other)?;
                 if result.cleanup != madrillo::CleanupResult::Complete {
                     return Err(io::Error::other(format!(
                         "workload cleanup is {:?}: {}",

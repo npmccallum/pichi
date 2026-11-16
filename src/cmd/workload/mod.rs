@@ -903,11 +903,11 @@ impl Workload {
     pub fn cleanup(path: &Path) -> Result<()> {
         Record::at(path)?.release_runtime_files()
     }
-    pub fn open(id: uuid::Uuid, config: &crate::config::Config) -> Result<Self> {
+    pub fn open(id: &str, config: &crate::config::Config) -> Result<Self> {
         let layout = config.resolve_layout()?;
         let records =
             record::Records::existing(&layout.graphroot)?.context("no retained workloads")?;
-        Ok(Self(records.get(id)?))
+        Ok(Self(records.resolve(id)?))
     }
 
     pub async fn logs(&self) -> Result<()> {

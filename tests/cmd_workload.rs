@@ -358,6 +358,7 @@ async fn detached_launch_is_discoverable_and_later_wait_reads_retained_exit() {
     let id = String::from_utf8(output.get_output().stdout.clone()).unwrap();
     let id = id.trim();
     uuid::Uuid::parse_str(id).unwrap();
+    let prefix = &id[..8];
     fixture
         .command()
         .args(["wait", id])
@@ -372,22 +373,22 @@ async fn detached_launch_is_discoverable_and_later_wait_reads_retained_exit() {
             .unwrap();
     let endpoint: PathBuf = serde_json::from_value(identity["endpoint"].clone()).unwrap();
     assert_eq!(endpoint.parent(), Some(fixture.root.path()));
-    // The endpoint is gone after monitor exit; the same command uses state.
+    // The endpoint is gone after monitor exit; a prefix uses retained state.
     fixture
         .command()
-        .args(["wait", id])
+        .args(["wait", prefix])
         .assert()
         .success()
         .stdout("23\n");
     fixture
         .command()
-        .args(["attach", id])
+        .args(["attach", prefix])
         .assert()
         .code(23)
         .stdout("");
     fixture
         .command()
-        .args(["logs", id])
+        .args(["logs", prefix])
         .assert()
         .success()
         .stdout("detached output\n");
@@ -615,13 +616,13 @@ async fn stop_requests_console_eof_and_preserves_the_original_exit_status() {
         .assert()
         .success();
     let id = String::from_utf8(output.get_output().stdout.clone()).unwrap();
-    for _ in 0..2 {
+    for selector in [id.trim(), &id[..8]] {
         fixture
             .command()
-            .args(["stop", id.trim()])
+            .args(["stop", selector])
             .assert()
             .success()
-            .stdout(id.clone());
+            .stdout(format!("{selector}\n"));
     }
     fixture
         .command()

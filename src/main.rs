@@ -81,7 +81,11 @@ enum Command {
     Stop(cli::StopArgs),
 
     /// List retained workloads, including unknown and completed workloads.
-    Ps,
+    Ps {
+        /// Print only full workload IDs, one per line.
+        #[arg(long, short = 'q')]
+        quiet: bool,
+    },
 
     #[command(hide = true)]
     CleanupWorkload { path: std::path::PathBuf },
@@ -173,7 +177,7 @@ async fn run(cli: Cli) -> anyhow::Result<NativeExit> {
             println!("{}", args.id);
             Ok(())
         }
-        Command::Ps => cmd::workload::Workload::list(&config).await,
+        Command::Ps { quiet } => cmd::workload::Workload::list(&config, quiet).await,
     }?;
     Ok(NativeExit(0))
 }

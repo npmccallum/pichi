@@ -983,13 +983,19 @@ impl Workload {
         }
     }
 
-    pub async fn list(config: &crate::config::Config) -> Result<()> {
+    pub async fn list(config: &crate::config::Config, quiet: bool) -> Result<()> {
         let layout = config.resolve_layout()?;
         let Some(records) = record::Records::existing(&layout.graphroot)? else {
             return Ok(());
         };
-        println!("ID                                   STATE    IMAGES");
+        if !quiet {
+            println!("ID                                   STATE    IMAGES");
+        }
         for record in records.list()? {
+            if quiet {
+                println!("{}", record.id());
+                continue;
+            }
             let status = if record.completion()?.is_some() {
                 "exited"
             } else {

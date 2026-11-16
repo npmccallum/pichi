@@ -33,8 +33,15 @@ pub(crate) struct Records {
 #[derive(Debug)]
 pub(crate) struct Record {
     identity: Identity,
+    pub(crate) run: Run,
+}
+
+/// One boot's monitor state, diagnostics and control endpoint.
+#[derive(Debug)]
+pub(crate) struct Run {
     path: PathBuf,
     directory: Dir,
+    endpoint: PathBuf,
 }
 
 impl Records {
@@ -46,9 +53,9 @@ impl Records {
             return Ok(false);
         };
         for record in records.list()? {
-            match record.directory.open_dir_nofollow("output") {
+            match record.run.directory.open_dir_nofollow("output") {
                 Ok(_) => {
-                    if !matches!(record.completion()?, Some(result) if result.cleanup == CleanupResult::Complete)
+                    if !matches!(record.run.completion()?, Some(result) if result.cleanup == CleanupResult::Complete)
                     {
                         return Ok(true);
                     }
@@ -245,16 +252,19 @@ impl Records {
             self.directory.open(".")?.sync_all()?;
         }
         Ok(Record {
+            run: Run {
+                path: self.path.join(name),
+                directory,
+                endpoint: identity.endpoint.clone(),
+            },
             identity,
-            path: self.path.join(name),
-            directory,
         })
     }
 
     pub(super) fn get(&self, id: Uuid) -> Result<Record> {
         let name = id.to_string();
         let directory = self.directory.open_dir_nofollow(&name)?;
-        let identity: Identity = Record::read(&directory, "identity.json", 1024 * 1024)?
+        let identity: Identity = Run::read(&directory, "identity.json", 1024 * 1024)?
             .context("missing workload identity")?;
         if identity.version != 1
             || identity.id != id
@@ -264,9 +274,12 @@ impl Records {
             bail!("invalid workload identity");
         }
         Ok(Record {
+            run: Run {
+                path: self.path.join(name),
+                directory,
+                endpoint: identity.endpoint.clone(),
+            },
             identity,
-            path: self.path.join(name),
-            directory,
         })
     }
 
@@ -291,7 +304,7 @@ impl Records {
     pub(super) fn pins(&self) -> Result<Vec<Digest>> {
         let mut pins = Vec::new();
         for record in self.list()? {
-            if !matches!(record.completion()?, Some(result) if result.cleanup == CleanupResult::Complete)
+            if !matches!(record.run.completion()?, Some(result) if result.cleanup == CleanupResult::Complete)
             {
                 pins.extend(record.identity.images);
             }
@@ -317,22 +330,19 @@ impl Record {
             .get(id)
     }
 
-    pub(super) fn path(&self) -> &Path {
-        &self.path
-    }
-
     pub(crate) fn storage_directory(&self) -> PathBuf {
-        self.path.join("storage")
+        self.run.path.join("storage")
     }
 
     pub(crate) fn release_runtime_files(&self) -> Result<()> {
-        if matches!(self.completion()?, Some(result) if result.cleanup == CleanupResult::Complete) {
+        if matches!(self.run.completion()?, Some(result) if result.cleanup == CleanupResult::Complete)
+        {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::{FileTypeExt, MetadataExt};
                 // A forced Dillo exit cannot run its socket-name destructor.
                 // Remove only its owned socket, after confirmed scope cleanup.
-                let endpoint = self.resize_endpoint();
+                let endpoint = self.run.resize_endpoint();
                 match std::fs::symlink_metadata(&endpoint) {
                     Ok(metadata)
                         if metadata.file_type().is_socket()
@@ -349,7 +359,7 @@ impl Record {
                     Err(error) => return Err(error.into()),
                 }
             }
-            match self.directory.remove_dir_all("storage") {
+            match self.run.directory.remove_dir_all("storage") {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => return Err(error.into()),
@@ -364,11 +374,34 @@ impl Record {
     pub(super) fn images(&self) -> &[Digest] {
         &self.identity.images
     }
+    pub(crate) fn create_build_output(&self) -> Result<PathBuf> {
+        self.run.directory.create_dir("output")?;
+        Ok(self.run.path.join("output"))
+    }
+
+    pub(crate) fn release_build_output(&self) -> Result<()> {
+        if matches!(self.run.completion()?, Some(result) if result.cleanup == CleanupResult::Complete)
+        {
+            match self.run.directory.remove_dir_all("output") {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Run {
+    pub(super) fn path(&self) -> &Path {
+        &self.path
+    }
+
     pub(super) fn endpoint(&self) -> &Path {
-        &self.identity.endpoint
+        &self.endpoint
     }
     pub(super) fn resize_endpoint(&self) -> PathBuf {
-        let mut endpoint = self.identity.endpoint.as_os_str().to_os_string();
+        let mut endpoint = self.endpoint.as_os_str().to_os_string();
         endpoint.push(".resize");
         endpoint.into()
     }
@@ -396,22 +429,6 @@ impl Record {
             text.push_str(" [truncated]");
         }
         Ok(text)
-    }
-
-    pub(crate) fn create_build_output(&self) -> Result<PathBuf> {
-        self.directory.create_dir("output")?;
-        Ok(self.path.join("output"))
-    }
-
-    pub(crate) fn release_build_output(&self) -> Result<()> {
-        if matches!(self.completion()?, Some(result) if result.cleanup == CleanupResult::Complete) {
-            match self.directory.remove_dir_all("output") {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error.into()),
-            }
-        }
-        Ok(())
     }
 
     pub(crate) fn completion(&self) -> Result<Option<Completion>> {
@@ -490,15 +507,20 @@ mod tests {
         let _resize = {
             use interprocess::local_socket::{GenericFilePath, ListenerOptions, prelude::*};
             ListenerOptions::new()
-                .name(record.resize_endpoint().to_fs_name::<GenericFilePath>()?)
+                .name(
+                    record
+                        .run
+                        .resize_endpoint()
+                        .to_fs_name::<GenericFilePath>()?,
+                )
                 .create_sync()?
         };
         std::fs::create_dir(record.storage_directory())?;
         let backing = record.storage_directory().join("storage.raw");
         std::fs::write(&backing, b"guest data")?;
-        Record::at(record.path())?.release_runtime_files()?;
+        Record::at(record.run.path())?.release_runtime_files()?;
         assert!(backing.exists(), "missing result must retain storage");
-        std::fs::create_dir(record.state())?;
+        std::fs::create_dir(record.run.state())?;
         for cleanup in [
             CleanupResult::Unknown,
             CleanupResult::Incomplete {
@@ -519,15 +541,15 @@ mod tests {
                 output_truncated: false,
             };
             std::fs::write(
-                record.state().join("result.json"),
+                record.run.state().join("result.json"),
                 serde_json::to_vec(&result)?,
             )?;
             for _ in 0..2 {
-                Record::at(record.path())?.release_runtime_files()?;
+                Record::at(record.run.path())?.release_runtime_files()?;
                 assert_eq!(backing.exists(), result.cleanup != CleanupResult::Complete);
                 #[cfg(unix)]
                 assert_eq!(
-                    record.resize_endpoint().exists(),
+                    record.run.resize_endpoint().exists(),
                     result.cleanup != CleanupResult::Complete
                 );
             }
@@ -585,6 +607,7 @@ mod tests {
             }
             assert!(
                 !record
+                    .run
                     .state()
                     .starts_with(std::fs::canonicalize(&graphroot)?),
                 "build's cache mount must not include console state"
@@ -616,7 +639,7 @@ mod tests {
                 monitor_warnings: Vec::new(),
                 output_truncated: false,
             };
-            std::fs::create_dir(record.state())?;
+            std::fs::create_dir(record.run.state())?;
             for cleanup in [
                 CleanupResult::Unknown,
                 CleanupResult::Incomplete {
@@ -625,7 +648,7 @@ mod tests {
             ] {
                 result.cleanup = cleanup;
                 std::fs::write(
-                    record.state().join("result.json"),
+                    record.run.state().join("result.json"),
                     serde_json::to_vec(&result)?,
                 )?;
                 crate::cmd::prune::run(PruneArgs { dry_run: false }, &config).await?;
@@ -638,7 +661,7 @@ mod tests {
             }
             result.cleanup = CleanupResult::Complete;
             std::fs::write(
-                record.state().join("result.json"),
+                record.run.state().join("result.json"),
                 serde_json::to_vec(&result)?,
             )?;
             crate::cmd::prune::run(PruneArgs { dry_run: false }, &config).await?;
@@ -684,8 +707,8 @@ mod tests {
         let records = Records::open(&graphroot)?;
         let image = Digest::Sha256([0; 32]);
         let record = records.create(vec![image], root.path().join("control"), Uuid::new_v4())?;
-        symlink(outside.path(), record.state())?;
-        assert!(record.completion().is_err());
+        symlink(outside.path(), record.run.state())?;
+        assert!(record.run.completion().is_err());
         Ok(())
     }
 }

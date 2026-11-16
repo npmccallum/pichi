@@ -179,6 +179,8 @@ A slow guest backpressures input without a write deadline. The attachment keeps
 receiving output and completion and handling resize and caller signals while a
 write waits. Input read-ahead is bounded. Once input is closed, attachments keep
 receiving output; terminal detach discards unsent input and leaves the VM running.
+On Unix, SIGQUIT ends the attachment with status 131 after restoring the host
+terminal; the supervised VM keeps running.
 
 A host terminal with `run -t` or `attach -i` sends its initial dimensions and
 subsequent changes

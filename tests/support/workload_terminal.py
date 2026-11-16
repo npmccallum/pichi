@@ -23,6 +23,9 @@ signal.signal(signal.SIGTERM, signal.SIG_IGN)
 signal.signal(signal.SIGHUP, signal.SIG_IGN)
 original = termios.tcgetattr(0)
 child = subprocess.Popen(sys.argv[2:])
+# The shell survives the group's quit signal, without making the child
+# inherit an ignored disposition.
+signal.signal(signal.SIGQUIT, signal.SIG_IGN)
 # Like an interactive shell, relay the session owner's terminal hangup to
 # its owned foreground child. The kernel need not signal every process.
 signal.signal(signal.SIGHUP, lambda number, frame: child.send_signal(number))
@@ -128,6 +131,13 @@ try:
         os.killpg(terminal.process.pid, signal.SIGTERM)
         terminal.restored(143)
     assert not (record / "monitor/result.json").exists(), "caller signal stopped the workload"
+
+    with Terminal(["attach", "-i", identity]) as terminal:
+        terminal.send(b"before-quit\x03\n")
+        terminal.receive(b"before-quit\x03")
+        os.killpg(terminal.process.pid, signal.SIGQUIT)
+        terminal.restored(131)
+    assert not (record / "monitor/result.json").exists(), "SIGQUIT stopped the workload"
 
     with Terminal(["attach", "-i", identity], check_restoration=False) as terminal:
         # A binary control byte cannot be satisfied by the host's cooked echo.

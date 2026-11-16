@@ -524,6 +524,41 @@ mod tests {
                 assert!(matches!(reply, ServerMessage::Output { bytes, .. } if bytes == payload));
             }
         }
+        // Both native directions must progress together above the monitor's
+        // input/output buffering limits, including on Windows named pipes.
+        {
+            const SIZE: usize = 8 * 1024 * 1024;
+            let (writer, reader) = attached.halves();
+            let (_, observer) = running.client.halves();
+            let send = async {
+                for _ in 0..SIZE / 8192 {
+                    writer
+                        .send(ClientMessage::Input {
+                            bytes: vec![0xa5; 8192],
+                        })
+                        .await?;
+                }
+                Ok::<_, anyhow::Error>(())
+            };
+            let receive = async |reader: &mut client::Receiver| -> Result<()> {
+                let mut total = 0;
+                while total < SIZE {
+                    match reader.next().await? {
+                        ServerMessage::Output { bytes, .. } => {
+                            assert!(bytes.iter().all(|&byte| byte == 0xa5));
+                            total += bytes.len();
+                        }
+                        response => bail!("unexpected echo response: {response:?}"),
+                    }
+                }
+                assert_eq!(total, SIZE);
+                Ok(())
+            };
+            tokio::time::timeout(Duration::from_secs(60), async {
+                tokio::try_join!(send, receive(reader), receive(observer))
+            })
+            .await??;
+        }
         // Administrative shutdown must work while an attachment still forwards input.
         let workload = Workload(records.get(record.id())?);
         let stopped = workload.stop(Duration::from_secs(5)).await?;

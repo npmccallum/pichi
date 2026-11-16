@@ -669,3 +669,147 @@ async fn stop_forces_after_grace_and_zero_forces_immediately() {
         ));
     }
 }
+
+#[tokio::test]
+async fn blocked_console_input_keeps_output_flowing_and_preserves_every_byte() {
+    use std::{io::BufRead as _, process::Stdio, sync::mpsc};
+    use wait_timeout::ChildExt as _;
+    const SIZE: usize = 8 * 1024 * 1024;
+    let fixture = WorkloadFixture::new(
+        r"
+import os, signal, time
+signal.alarm(40)
+os.write(1, b'early\n')
+time.sleep(1.5)
+os.write(1, b'late\n')
+while not os.path.exists(os.environ['READ_GATE']): time.sleep(0.01)
+total = 0
+while total < int(os.environ['INPUT_SIZE']):
+    data = os.read(0, min(65536, int(os.environ['INPUT_SIZE']) - total))
+    assert data, 'input ended before all bytes arrived'
+    assert data == b'z' * len(data)
+    total += len(data)
+os.write(1, f'count={total}\n'.encode())
+",
+    )
+    .await;
+    let input = fixture.root.path().join("input");
+    let gate = fixture.root.path().join("read-gate");
+    std::fs::write(&input, vec![b'z'; SIZE]).unwrap();
+    let mut child = fixture
+        .native_command()
+        .args(["run", "-i", "fixture:1"])
+        .env("READ_GATE", &gate)
+        .env("INPUT_SIZE", SIZE.to_string())
+        .stdin(Stdio::from(std::fs::File::open(input).unwrap()))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let (send, lines) = mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        for line in std::io::BufReader::new(stdout).lines() {
+            if send.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let early = lines.recv_timeout(Duration::from_secs(5));
+    let late = lines.recv_timeout(Duration::from_secs(4));
+    // Keep input blocked beyond the former five-second write deadline.
+    std::thread::sleep(Duration::from_secs(5));
+    // Release the fixture even on a failed observation so no guest stays blocked.
+    std::fs::write(&gate, b"").unwrap();
+    let count = lines.recv_timeout(Duration::from_secs(30));
+    let exited = child.wait_timeout(Duration::from_secs(10)).unwrap();
+    if exited.is_none() {
+        let _ = child.kill();
+    }
+    let output = child.wait_with_output().unwrap();
+    reader.join().unwrap();
+    assert_eq!(early.unwrap().unwrap(), "early");
+    assert_eq!(late.unwrap().unwrap(), "late", "output waited for input");
+    assert_eq!(count.unwrap().unwrap(), format!("count={SIZE}"));
+    assert!(exited.is_some(), "attachment did not finish");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[tokio::test]
+async fn blocked_console_input_observes_stop_and_caller_signals() {
+    use std::{io::BufRead as _, process::Stdio};
+    use wait_timeout::ChildExt as _;
+    for stop_guest in [true, false] {
+        let fixture = WorkloadFixture::new(
+            "import os, signal\nsignal.alarm(30)\nos.write(1, b'ready\\n')\nwhile True: signal.pause()",
+        ).await;
+        let input = fixture.root.path().join("input");
+        std::fs::write(&input, vec![b'z'; 8 * 1024 * 1024]).unwrap();
+        let mut child = fixture
+            .native_command()
+            .args(["run", "-i", "fixture:1"])
+            .stdin(Stdio::from(std::fs::File::open(input).unwrap()))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut reader = std::io::BufReader::new(child.stdout.take().unwrap());
+        let mut ready = String::new();
+        reader.read_line(&mut ready).unwrap();
+        assert_eq!(ready, "ready\n");
+        let id = fixture
+            .record()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        // Let the monitor's finite input budget fill while the guest never reads.
+        std::thread::sleep(Duration::from_millis(1500));
+        if stop_guest {
+            fixture
+                .command()
+                .args(["stop", "--time", "0", &id])
+                .assert()
+                .success();
+        } else {
+            nix::sys::signal::kill(
+                nix::unistd::Pid::from_raw(i32::try_from(child.id()).unwrap()),
+                nix::sys::signal::Signal::SIGTERM,
+            )
+            .unwrap();
+        }
+        let exited = child.wait_timeout(Duration::from_secs(3)).unwrap();
+        if exited.is_none() {
+            let _ = child.kill();
+        }
+        let output = child.wait_with_output().unwrap();
+        // A caller signal must leave the guest alive, then clean it up explicitly.
+        if !stop_guest {
+            let live = fixture.command().arg("ps").assert().success();
+            let listed = String::from_utf8_lossy(&live.get_output().stdout);
+            let running = listed
+                .lines()
+                .any(|line| line.contains(&id) && line.contains("running"));
+            fixture
+                .command()
+                .args(["stop", "--time", "0", &id])
+                .assert()
+                .success();
+            assert!(running, "{listed}");
+        }
+        assert!(
+            exited.is_some(),
+            "attachment ignored shutdown while writing"
+        );
+        assert_eq!(
+            output.status.code(),
+            Some(if stop_guest { 137 } else { 143 }),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}

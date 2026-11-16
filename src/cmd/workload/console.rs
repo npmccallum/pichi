@@ -3,11 +3,15 @@
 
 //! Host console attachment. EOF releases input; the monitor retains its writer.
 
-use super::{Client, Outcome};
+use super::{Client, Outcome, client::Sender};
 use anyhow::{Context, Result, bail};
-use madrillo::{ClientMessage, ServerMessage};
+use madrillo::{ClientMessage, ErrorCode, ServerMessage};
+use std::collections::VecDeque;
 use std::io::{self, IsTerminal, Read, Write};
 use tokio::sync::mpsc;
+
+/// Cap queued stdin batches beyond the bounded reader channel and active write.
+const READ_AHEAD: usize = 8;
 
 struct RawTerminal(bool);
 
@@ -124,36 +128,65 @@ impl Console {
         client: &mut Client,
         resize: &std::path::Path,
     ) -> Result<u32> {
+        let (writer, reader) = client.halves();
         let resize = super::resize::Resize(resize);
         let resize = resize.watch();
         tokio::pin!(resize);
+        let mut staged = VecDeque::new();
+        let mut idle = Some(writer);
+        let mut flight: Option<SendInFlight<'_>> = None;
+        let mut forward = self.interactive;
         loop {
+            if flight.is_none()
+                && let Some(message) = staged.pop_front()
+                && let Some(writer) = idle.take()
+            {
+                flight = Some(Box::pin(async move {
+                    let sent = writer.send(message).await;
+                    (writer, sent)
+                }));
+            }
             tokio::select! {
                 () = &mut resize, if self.terminal.0 && self.interactive => {},
-                response = client.next() => match response? {
+                response = reader.next() => match response? {
                     ServerMessage::Output { stream, bytes } => {
                         Self::write(&stream, &bytes)?;
                     }
                     ServerMessage::Completed { result } => return Outcome(result).code(),
+                    ServerMessage::Error { code: ErrorCode::InputClosed, .. } => {
+                        // Keep receiving output and recognizing detach keys.
+                        forward = false;
+                        staged.clear();
+                    }
                     ServerMessage::Error { code, message } => bail!("monitor {code:?}: {message}"),
                     response => bail!("unexpected monitor response: {response:?}"),
                 },
-                message = self.input.recv(), if self.interactive => {
+                (writer, sent) = async { flight.as_mut().expect("guard").await }, if flight.is_some() => {
+                    flight = None;
+                    idle = Some(writer);
+                    sent?;
+                },
+                message = self.input.recv(), if self.interactive && staged.len() < READ_AHEAD => {
                     let Some(bytes) = message else {
-                        if self.keys.prefix {
-                            client.send(ClientMessage::Input { bytes: vec![16] }).await?;
+                        if forward {
+                            if self.keys.prefix {
+                                staged.push_back(ClientMessage::Input { bytes: vec![16] });
+                            }
+                            // Release only this attachment, after all its input.
+                            staged.push_back(ClientMessage::InputEnd);
                         }
-                        // Host EOF must not close dillo's liveness pipe.
-                        client.send(ClientMessage::InputEnd).await?;
                         self.interactive = false;
                         continue;
                     };
                     let bytes = bytes.context("read console input")?;
                     let (bytes, detached) = if self.terminal.0 { self.keys.consume(&bytes) } else { (bytes, false) };
-                    if !bytes.is_empty() { client.send(ClientMessage::Input { bytes }).await?; }
                     if detached {
-                        client.send(ClientMessage::InputEnd).await?;
+                        // Closing this connection releases input without waiting
+                        // for the guest to consume outstanding writes.
                         return Ok(0);
+                    }
+                    if forward && !bytes.is_empty() {
+                        staged.push_back(ClientMessage::Input { bytes });
                     }
                 },
                 code = self.signals.cancelled() => return code,
@@ -161,6 +194,11 @@ impl Console {
         }
     }
 }
+
+/// Keep a write alive across select iterations; cancellation must not lose
+/// a partially sent frame. The sender is returned when the write finishes.
+type SendInFlight<'a> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = (&'a mut Sender, Result<()>)> + Send + 'a>>;
 
 struct Signals {
     #[cfg(unix)]

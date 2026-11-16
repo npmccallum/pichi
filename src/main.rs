@@ -145,7 +145,7 @@ async fn run(cli: Cli) -> anyhow::Result<NativeExit> {
         Command::Run(args) => return Ok(NativeExit(cmd::run::run(args, &config).await?)),
         Command::Attach(args) => {
             return Ok(NativeExit(
-                cmd::workload::Workload::open(args.id, &config)?
+                cmd::workload::Workload::open(&args.id, &config)?
                     .attach(args.interactive)
                     .await?,
             ));
@@ -153,7 +153,7 @@ async fn run(cli: Cli) -> anyhow::Result<NativeExit> {
         Command::Wait(args) => {
             println!(
                 "{}",
-                cmd::workload::Workload::open(args.id, &config)?
+                cmd::workload::Workload::open(&args.id, &config)?
                     .wait()
                     .await?
                     .code()?
@@ -161,12 +161,12 @@ async fn run(cli: Cli) -> anyhow::Result<NativeExit> {
             Ok(())
         }
         Command::Logs(args) => {
-            cmd::workload::Workload::open(args.id, &config)?
+            cmd::workload::Workload::open(&args.id, &config)?
                 .logs()
                 .await
         }
         Command::Stop(args) => {
-            cmd::workload::Workload::open(args.id, &config)?
+            cmd::workload::Workload::open(&args.id, &config)?
                 .stop(std::time::Duration::from_secs(u64::from(args.time)))
                 .await?
                 .code()?;

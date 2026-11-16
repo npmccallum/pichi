@@ -386,7 +386,8 @@ pub struct RunArgs {
 /// Attach to an existing workload's live console.
 #[derive(Debug, ClapArgs)]
 pub struct AttachArgs {
-    pub id: uuid::Uuid,
+    /// Full workload UUID or an unambiguous prefix, ignoring case and hyphens.
+    pub id: String,
     /// Forward stdin; a host terminal uses raw mode and Ctrl-P Ctrl-Q detaches.
     #[arg(long, short = 'i')]
     pub interactive: bool,
@@ -395,13 +396,15 @@ pub struct AttachArgs {
 /// Select a workload by its durable ID.
 #[derive(Debug, ClapArgs)]
 pub struct WorkloadArgs {
-    pub id: uuid::Uuid,
+    /// Full workload UUID or an unambiguous prefix, ignoring case and hyphens.
+    pub id: String,
 }
 
 /// Stop a workload through its console shutdown contract.
 #[derive(Debug, ClapArgs)]
 pub struct StopArgs {
-    pub id: uuid::Uuid,
+    /// Full workload UUID or an unambiguous prefix, ignoring case and hyphens.
+    pub id: String,
 
     /// Seconds to wait for clean shutdown before forcing cleanup (0 forces immediately).
     #[arg(long, short = 't', default_value_t = 10)]

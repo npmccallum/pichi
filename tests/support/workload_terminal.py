@@ -102,7 +102,7 @@ class Terminal:
 
 records = Path(os.environ["XDG_DATA_HOME"]) / "pichi/storage.workloads"
 try:
-    with Terminal(["run", "-i", "fixture:1"]) as terminal:
+    with Terminal(["run", "-it", "fixture:1"]) as terminal:
         startup = terminal.receive(b"console-ready")
         startup += terminal.receive(b"size=300x77")
         assert b"console resize:" not in startup, startup
@@ -156,6 +156,25 @@ try:
                                  capture_output=True, timeout=10)
         assert stopped.returncode == 0, stopped.stderr
         terminal.restored(0)
+    for options, expected_size in [(["-i"], None), (["-t"], b"size=90x30")]:
+        known = {record.name for record in records.iterdir()}
+        with Terminal(["run", *options, "fixture:1"], size=(90, 30)) as terminal:
+            startup = terminal.receive(b"console-ready")
+            assert termios.tcgetattr(terminal.slave)[3] & termios.ICANON, "unexpected raw mode"
+            if expected_size is not None:
+                terminal.receive(expected_size)
+                terminal.resize(91, 31)
+                terminal.receive(b"size=91x31")
+            else:
+                # The host's cooked echo prints ^A; only the guest echoes
+                # this literal byte, proving stdin still reaches the VM.
+                os.write(terminal.master, b"without-terminal-mode\x01\n")
+                output = startup + terminal.receive(b"without-terminal-mode\x01")
+                assert b"size=" not in output + terminal.output, output
+            identity, = {record.name for record in records.iterdir()} - known
+            stopped = subprocess.run([sys.argv[1], "stop", identity], capture_output=True, timeout=10)
+            assert stopped.returncode == 0, stopped.stderr
+            terminal.restored(0)
     print("native terminal: initial size, resize, detached start, control bytes, detach, signal restoration, hangup survival, reattach and normal-exit restoration passed")
 finally:
     # Only records in this test's private storage root are eligible for cleanup.

@@ -16,8 +16,7 @@ const READ_AHEAD: usize = 8;
 struct RawTerminal(bool);
 
 impl RawTerminal {
-    fn open(interactive: bool) -> Result<Self> {
-        let raw = interactive && io::stdin().is_terminal();
+    fn open(raw: bool) -> Result<Self> {
         if raw {
             crossterm::terminal::enable_raw_mode()?;
         }
@@ -61,6 +60,7 @@ impl DetachKeys {
 
 pub(super) struct Console {
     terminal: RawTerminal,
+    sized: bool,
     input: mpsc::Receiver<io::Result<Vec<u8>>>,
     interactive: bool,
     keys: DetachKeys,
@@ -68,8 +68,9 @@ pub(super) struct Console {
 }
 
 impl Console {
-    pub(super) fn open(interactive: bool) -> Result<Self> {
-        let terminal = RawTerminal::open(interactive)?;
+    pub(super) fn open(interactive: bool, tty: bool) -> Result<Self> {
+        let sized = tty && io::stdin().is_terminal();
+        let terminal = RawTerminal::open(interactive && sized)?;
         let (sender, input) = mpsc::channel(8);
         if interactive {
             // A dedicated OS thread may block on stdin without preventing the
@@ -99,6 +100,7 @@ impl Console {
         }
         Ok(Self {
             terminal,
+            sized,
             input,
             interactive,
             keys: DetachKeys::default(),
@@ -148,7 +150,7 @@ impl Console {
                 }));
             }
             tokio::select! {
-                () = &mut resize, if self.terminal.0 && self.interactive => {},
+                () = &mut resize, if self.sized => {},
                 response = reader.next() => match response? {
                     ServerMessage::Output { stream, bytes } => {
                         Self::write(&stream, &bytes)?;
@@ -177,6 +179,7 @@ impl Console {
                             staged.push_back(ClientMessage::InputEnd);
                         }
                         self.interactive = false;
+                        self.sized = false;
                         continue;
                     };
                     let bytes = bytes.context("read console input")?;

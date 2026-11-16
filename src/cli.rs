@@ -353,9 +353,13 @@ pub struct UpdateArgs {
 /// Args for `pichi run <ref>` — boot an artifact (auto-pulling if not cached).
 #[derive(Debug, ClapArgs)]
 pub struct RunArgs {
-    /// Forward stdin; a host terminal uses raw mode and Ctrl-P Ctrl-Q detaches.
+    /// Forward stdin to the VM.
     #[arg(long, short = 'i')]
     pub interactive: bool,
+
+    /// Use host terminal mode; combine with -i for raw input and detach keys.
+    #[arg(long, short = 't')]
+    pub tty: bool,
 
     /// Start independently and print the workload ID.
     #[arg(long, short = 'd')]

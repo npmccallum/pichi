@@ -689,6 +689,7 @@ while total < int(os.environ['INPUT_SIZE']):
     assert data, 'input ended before all bytes arrived'
     assert data == b'z' * len(data)
     total += len(data)
+    if total % (1024 * 1024) == 0: os.write(2, f'received={total}\n'.encode())
 os.write(1, f'count={total}\n'.encode())
 ",
     )
@@ -730,7 +731,14 @@ os.write(1, f'count={total}\n'.encode())
     reader.join().unwrap();
     assert_eq!(early.unwrap().unwrap(), "early");
     assert_eq!(late.unwrap().unwrap(), "late", "output waited for input");
-    assert_eq!(count.unwrap().unwrap(), format!("count={SIZE}"));
+    assert_eq!(
+        count.as_ref().ok().and_then(|line| line.as_ref().ok()),
+        Some(&format!("count={SIZE}")),
+        "count={count:?}, remaining={:?}, status={}, stderr={}",
+        lines.try_iter().collect::<Vec<_>>(),
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert!(exited.is_some(), "attachment did not finish");
     assert!(
         output.status.success(),

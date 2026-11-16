@@ -1,0 +1,64 @@
+// SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
+//! Workload listing output through the CLI.
+
+use assert_cmd::Command;
+
+#[test]
+fn quiet_lists_the_same_full_ids_as_the_table() {
+    let root = tempfile::tempdir().unwrap();
+    let config = tempfile::tempdir().unwrap();
+    let command = || {
+        let mut command = Command::cargo_bin("pichi").unwrap();
+        command
+            .env("XDG_DATA_HOME", root.path())
+            .env("XDG_CONFIG_HOME", config.path())
+            .env("APPDATA", config.path());
+        command
+    };
+    command().args(["ps", "-q"]).assert().success().stdout("");
+    let records = root.path().join("pichi/storage.workloads");
+    std::fs::create_dir_all(&records).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&records, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let ids = [
+        "11111111-1111-4111-8111-111111111111",
+        "22222222-2222-4222-8222-222222222222",
+    ];
+    for id in ids {
+        let record = records.join(id);
+        std::fs::create_dir(&record).unwrap();
+        let identity = serde_json::json!({
+            "version": 1, "id": id,
+            "images": [format!("sha256:{}", "0".repeat(64))],
+            "endpoint": root.path().join("missing.sock"),
+        });
+        std::fs::write(record.join("identity.json"), identity.to_string()).unwrap();
+    }
+    let expected = format!("{}\n", ids.join("\n"));
+    for option in ["-q", "--quiet"] {
+        command()
+            .args(["ps", option])
+            .assert()
+            .success()
+            .stdout(expected.clone());
+    }
+    let table = command().arg("ps").assert().success();
+    let table = std::str::from_utf8(&table.get_output().stdout).unwrap();
+    assert_eq!(
+        table.lines().next(),
+        Some("ID                                   STATE    IMAGES")
+    );
+    assert_eq!(
+        table
+            .lines()
+            .skip(1)
+            .map(|line| line.split_whitespace().next().unwrap())
+            .collect::<Vec<_>>(),
+        ids
+    );
+}

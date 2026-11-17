@@ -106,7 +106,7 @@ pub async fn run(args: RunArgs, config: &Config) -> Result<u32> {
         .await?;
     let arguments: Vec<OsString> = dillo_args.into_iter().map(OsString::from).collect();
     let mut running = Running::start(
-        &record,
+        &record.run,
         &arguments,
         Vec::new(),
         storage
@@ -120,7 +120,7 @@ pub async fn run(args: RunArgs, config: &Config) -> Result<u32> {
         println!("{}", record.id());
         return Ok(0);
     }
-    let result = running.view(&record, args.interactive, args.tty).await;
+    let result = running.view(&record.run, args.interactive, args.tty).await;
     record.release_runtime_files()?;
     result
 }

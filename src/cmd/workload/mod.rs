@@ -20,7 +20,7 @@ mod windows;
 use anyhow::{Context, Result, bail};
 use client::Client;
 use madrillo::{ClientMessage, Completion, LeaderResult, ServerMessage};
-use record::Record;
+use record::{Record, Run};
 use std::{
     ffi::OsString,
     fs::File,
@@ -332,7 +332,7 @@ mod tests {
         // A preexisting state file fails before the monitor can prepare its
         // endpoint or execute any workload, including the default Dillo path.
         std::fs::write(record.run.state(), b"reserved")?;
-        let error = Running::start(&record, &[], Vec::new(), Vec::new(), false)
+        let error = Running::start(&record.run, &[], Vec::new(), Vec::new(), false)
             .await
             .expect_err("preexisting monitor state must fail");
         let diagnostic = record.run.monitor_diagnostic()?;
@@ -607,13 +607,13 @@ mod tests {
             running.client.next().await?,
             ServerMessage::Completed { result } if result == completion
         ));
-        assert_eq!(running.view(&record, false, false).await?, 0);
+        assert_eq!(running.view(&record.run, false, false).await?, 0);
         let result_path = record.run.state().join("result.json");
         let saved_result = std::fs::read(&result_path)?;
         std::fs::remove_file(&result_path)?;
         assert!(
             running
-                .view(&record, false, false)
+                .view(&record.run, false, false)
                 .await
                 .unwrap_err()
                 .is::<client::ConnectionError>()
@@ -621,7 +621,7 @@ mod tests {
         std::fs::write(&result_path, b"invalid result")?;
         assert!(
             running
-                .view(&record, false, false)
+                .view(&record.run, false, false)
                 .await
                 .unwrap_err()
                 .is::<client::ConnectionError>()
@@ -659,7 +659,7 @@ mod tests {
                 };
                 let viewing = async {
                     running.client = Client::connect(&endpoint).await?;
-                    running.view(&record, false, false).await
+                    running.view(&record.run, false, false).await
                 };
                 let (server, result) = tokio::time::timeout(Duration::from_secs(5), async {
                     tokio::join!(serving, viewing)
@@ -843,43 +843,40 @@ mod tests {
 impl Running {
     /// Both run and build pass the same opaque dillo arguments/resources here.
     pub(crate) async fn start(
-        record: &Record,
+        run: &Run,
         arguments: &[OsString],
         inherited: Vec<File>,
         held: Vec<File>,
         input: bool,
     ) -> Result<Self> {
         let mut arguments = arguments.to_vec();
-        arguments.extend([
-            "--console-resize".into(),
-            record.run.resize_endpoint().into(),
-        ]);
+        arguments.extend(["--console-resize".into(), run.resize_endpoint().into()]);
         let mut running = Launch {
             monitor: &Self::executable(),
             program: &crate::cmd::run::find_dillo(),
             arguments: &arguments,
-            state: &record.run.state(),
-            endpoint: record.run.endpoint(),
+            state: &run.state(),
+            endpoint: run.endpoint(),
             input,
             inherited,
-            cleanup: Some(record.run.path()),
+            cleanup: Some(run.path()),
             held,
         }
         .spawn()
         .await
         .with_context(|| {
             format!(
-                "launch workload {}; its retained state is unknown",
-                record.id()
+                "launch boot {}; its retained state is unknown",
+                run.path().display()
             )
         })?;
         if let Err(error) = running.started().await {
-            return Err(running.startup_error(record, error).await);
+            return Err(running.startup_error(run, error).await);
         }
         Ok(running)
     }
 
-    async fn startup_error(&mut self, record: &Record, error: anyhow::Error) -> anyhow::Error {
+    async fn startup_error(&mut self, run: &Run, error: anyhow::Error) -> anyhow::Error {
         // EOF can precede the monitor's final diagnostic flush. Await only our
         // own process, with a bound; a launch timeout must not kill a workload
         // whose startup state is still unknown.
@@ -894,29 +891,24 @@ impl Running {
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        let diagnostic = match record.run.monitor_diagnostic() {
+        let diagnostic = match run.monitor_diagnostic() {
             Ok(text) if !text.is_empty() => text,
             Ok(_) => "no monitor diagnostic was recorded".into(),
             Err(error) => format!("could not read monitor diagnostic: {error:#}"),
         };
         error.context(format!(
-            "launch workload {}; monitor diagnostic ({}): {diagnostic}",
-            record.id(),
-            record.run.path().join("monitor.err").display()
+            "launch boot {}; monitor diagnostic ({}): {diagnostic}",
+            run.path().display(),
+            run.path().join("monitor.err").display()
         ))
     }
 
-    pub(crate) async fn view(
-        &mut self,
-        record: &Record,
-        interactive: bool,
-        tty: bool,
-    ) -> Result<u32> {
+    pub(crate) async fn view(&mut self, run: &Run, interactive: bool, tty: bool) -> Result<u32> {
         let result = console::Console::open(interactive, tty)?
-            .view(&mut self.client, &record.run.resize_endpoint())
+            .view(&mut self.client, &run.resize_endpoint())
             .await;
         match result {
-            Err(error) if error.is::<client::ConnectionError>() => match record.run.completion() {
+            Err(error) if error.is::<client::ConnectionError>() => match run.completion() {
                 Ok(Some(result)) => Outcome(result).code(),
                 _ => Err(error),
             },
@@ -938,13 +930,13 @@ impl Running {
             .await
     }
 
-    pub(crate) async fn terminate(&mut self, record: &Record) -> Result<Completion> {
-        if let Some(result) = record.run.completion()? {
+    pub(crate) async fn terminate(&mut self, run: &Run) -> Result<Completion> {
+        if let Some(result) = run.completion()? {
             return Ok(result);
         }
         match self.client.terminate().await {
             Ok(result) => Ok(result),
-            Err(error) => record.run.completion()?.ok_or(error),
+            Err(error) => run.completion()?.ok_or(error),
         }
     }
 

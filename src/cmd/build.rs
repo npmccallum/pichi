@@ -33,7 +33,7 @@ use crate::cmd::requirements::SlotArgument as _;
 use crate::cmd::run::{DevicePath as _, build_gpt_spec, path_arg};
 use crate::cmd::workload::{
     Outcome, Running,
-    record::{Record, Records},
+    record::{Records, Run},
 };
 use crate::cmd::writable_storage::WritableStorage;
 use crate::config::Config;
@@ -187,7 +187,7 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
         .transpose()?;
     let result: Result<_> = async {
         boot_serve_and_wait(
-            &record,
+            &record.run,
             &argv,
             pipes,
             response,
@@ -394,7 +394,7 @@ pub(crate) async fn resolve_manifest(
 /// `dev.pichi.build`, and wait for power-off. Build adds its direct named-port
 /// exchange to the shared monitor launch, including its RUST_LOG default.
 async fn boot_serve_and_wait(
-    record: &Record,
+    run: &Run,
     args: &[String],
     pipes: build_port::BuildPortPipes,
     response: Vec<u8>,
@@ -409,8 +409,7 @@ async fn boot_serve_and_wait(
         ..
     } = pipes;
     let args: Vec<OsString> = args.iter().map(OsString::from).collect();
-    let mut running =
-        Running::start(record, &args, vec![device_rx, device_tx], held, false).await?;
+    let mut running = Running::start(run, &args, vec![device_rx, device_tx], held, false).await?;
     let (done, mut served) = tokio::sync::oneshot::channel();
     // Blocking named-port I/O has no monitor/VM ownership and must not keep
     // the async runtime alive if a missing result leaves cleanup unknown.
@@ -420,7 +419,7 @@ async fn boot_serve_and_wait(
             let _ = done.send(serve_build_port(host_rx, host_tx, &response));
         });
     if let Err(error) = worker {
-        let cleanup = running.terminate(record).await;
+        let cleanup = running.terminate(run).await;
         return Err(error).context(format!(
             "start build-port reader; monitor cleanup: {cleanup:?}"
         ));
@@ -447,7 +446,7 @@ async fn boot_serve_and_wait(
         Err(error) => {
             // No PID lookup: the authenticated live monitor owns termination.
             // Failure keeps the retained output and all uncertain image pins.
-            let cleanup = running.terminate(record).await;
+            let cleanup = running.terminate(run).await;
             return Err(error).context(format!("build failed; monitor cleanup: {cleanup:?}"));
         }
     };

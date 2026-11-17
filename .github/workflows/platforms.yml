@@ -107,15 +107,7 @@ jobs:
           $runner = ConvertTo-Json -Compress -InputObject @('pwsh', '-NoLogo', '-NoProfile', '-NonInteractive', '-File', $script)
           Add-Content -LiteralPath .cargo/config.toml -Value "`n[target.x86_64-pc-windows-msvc]`nrunner = $runner"
 
-      - name: 📦 Install packaged Dillo
-        if: runner.os == 'Linux'
-        run: |
-          sudo add-apt-repository --yes ppa:nmccallum/pichi
-          sudo apt-get install -y dillo-vm
-          dpkg-query -W dillo-vm
-
       - name: 🔨 Build native Dillo
-        if: runner.os != 'Linux'
         run: |
           revision=$(python3 -c 'import sys, tomllib; lock = tomllib.load(open("Cargo.lock", "rb")); sys.stdout.write(next(p["source"].rsplit("#", 1)[1] for p in lock["package"] if p["name"] == "dillo"))')
           cargo "+$NIGHTLY" --config "$GITHUB_WORKSPACE/.cargo/config.toml" install \

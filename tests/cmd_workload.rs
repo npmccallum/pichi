@@ -392,7 +392,13 @@ async fn detached_launch_is_discoverable_and_later_wait_reads_retained_exit() {
         .assert()
         .success()
         .stdout("detached output\n");
-    let listed = fixture.command().arg("ps").assert().success();
+    fixture
+        .command()
+        .args(["ps", "-q"])
+        .assert()
+        .success()
+        .stdout("");
+    let listed = fixture.command().args(["ps", "--all"]).assert().success();
     let rows = String::from_utf8(listed.get_output().stdout.clone()).unwrap();
     assert!(rows.contains(id) && rows.contains("exited"), "{rows}");
 }

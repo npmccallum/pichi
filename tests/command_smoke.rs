@@ -276,7 +276,7 @@ impl Smoke {
             "guest did not verify built content:\n{boot}"
         );
         assert!(!boot.contains("Kernel panic"), "{boot}");
-        let workloads = self.run("ps", &["ps"]);
+        let workloads = self.run("ps", &["ps", "--all"]);
         let id = workloads
             .lines()
             .filter(|line| line.contains(image["digest"].as_str().unwrap()))

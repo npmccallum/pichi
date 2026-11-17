@@ -1135,7 +1135,7 @@ impl Workload {
         }
     }
 
-    pub async fn list(config: &crate::config::Config, quiet: bool) -> Result<()> {
+    pub async fn list(config: &crate::config::Config, all: bool, quiet: bool) -> Result<()> {
         let layout = config.resolve_layout()?;
         let Some(records) = record::Records::existing(&layout.graphroot)? else {
             return Ok(());
@@ -1144,11 +1144,15 @@ impl Workload {
             println!("ID                                   STATE    IMAGES");
         }
         for record in records.list()? {
+            let exited = record.run.completion()?.is_some();
+            if exited && !all {
+                continue;
+            }
             if quiet {
                 println!("{}", record.id());
                 continue;
             }
-            let status = if record.run.completion()?.is_some() {
+            let status = if exited {
                 "exited"
             } else {
                 let live = tokio::time::timeout(Duration::from_secs(5), async {

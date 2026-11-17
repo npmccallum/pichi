@@ -61,4 +61,50 @@ fn quiet_lists_the_same_full_ids_as_the_table() {
             .collect::<Vec<_>>(),
         ids
     );
+    // One confirmed completion changes selection, not the visibility of the
+    // other record whose monitor is unavailable and state remains unknown.
+    let monitor = records.join(ids[1]).join("monitor");
+    std::fs::create_dir(&monitor).unwrap();
+    let completion = madrillo::Completion {
+        version: madrillo::PROTOCOL_VERSION,
+        leader: madrillo::LeaderResult::Exit { code: 23 },
+        cause: madrillo::CompletionCause::LeaderExit,
+        exited_at_unix_ms: 0,
+        cleanup: madrillo::CleanupResult::Complete,
+        oom: madrillo::OomEvidence::NoneObserved,
+        log_errors: Vec::new(),
+        monitor_errors: Vec::new(),
+        monitor_warnings: Vec::new(),
+        output_truncated: false,
+    };
+    std::fs::write(
+        monitor.join("result.json"),
+        serde_json::to_vec(&completion).unwrap(),
+    )
+    .unwrap();
+    command()
+        .args(["ps", "-q"])
+        .assert()
+        .success()
+        .stdout(format!("{}\n", ids[0]));
+    for arguments in [["ps", "-a", "-q"], ["ps", "--all", "--quiet"]] {
+        command()
+            .args(arguments)
+            .assert()
+            .success()
+            .stdout(expected.clone());
+    }
+    let table = command().arg("ps").assert().success();
+    let table = std::str::from_utf8(&table.get_output().stdout).unwrap();
+    assert!(
+        table.contains(ids[0]) && table.contains("unknown"),
+        "{table}"
+    );
+    assert!(!table.contains(ids[1]), "{table}");
+    let all = command().args(["ps", "--all"]).assert().success();
+    let all = std::str::from_utf8(&all.get_output().stdout).unwrap();
+    assert!(
+        all.contains(ids[0]) && all.contains(ids[1]) && all.contains("exited"),
+        "{all}"
+    );
 }

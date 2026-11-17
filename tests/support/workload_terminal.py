@@ -124,7 +124,7 @@ try:
         terminal.restored(0)
     assert not (record / "monitor/result.json").exists(), "detach stopped the workload"
 
-    with Terminal(["attach", "-i", identity], size=(81, 25)) as terminal:
+    with Terminal(["attach", identity], size=(81, 25)) as terminal:
         terminal.receive(b"size=81x25")
         terminal.send(b"after-detach\n")
         terminal.receive(b"after-detach")
@@ -138,6 +138,15 @@ try:
         os.killpg(terminal.process.pid, signal.SIGQUIT)
         terminal.restored(131)
     assert not (record / "monitor/result.json").exists(), "SIGQUIT stopped the workload"
+
+    with Terminal(["attach", "--no-stdin", identity], size=(82, 26)) as terminal:
+        terminal.receive(b"size=82x26")
+        terminal.resize(83, 27)
+        terminal.receive(b"size=83x27")
+        assert termios.tcgetattr(terminal.slave)[3] & termios.ICANON, "output-only raw mode"
+        os.killpg(terminal.process.pid, signal.SIGTERM)
+        terminal.restored(143)
+    assert not (record / "monitor/result.json").exists(), "output-only detach stopped the workload"
 
     with Terminal(["attach", "-i", identity], check_restoration=False) as terminal:
         # A binary control byte cannot be satisfied by the host's cooked echo.
@@ -160,8 +169,10 @@ try:
                              capture_output=True, timeout=5)
     assert started.returncode == 0, started.stderr
     identity = started.stdout.decode().strip()
-    with Terminal(["attach", "-i", identity], size=(132, 43)) as terminal:
+    with Terminal(["attach", identity], size=(132, 43)) as terminal:
         terminal.receive(b"size=132x43")
+        terminal.send(b"independent-attach\x03\n")
+        terminal.receive(b"independent-attach\x03")
         stopped = subprocess.run([sys.argv[1], "stop", identity],
                                  capture_output=True, timeout=10)
         assert stopped.returncode == 0, stopped.stderr

@@ -8,6 +8,16 @@
 use assert_cmd::Command;
 
 #[test]
+fn attach_rejects_conflicting_input_choices() {
+    let result = Command::cargo_bin("pichi")
+        .unwrap()
+        .args(["attach", "-i", "--no-stdin", "workload"])
+        .assert()
+        .code(125);
+    assert!(String::from_utf8_lossy(&result.get_output().stderr).contains("cannot be used with"));
+}
+
+#[test]
 fn usage_and_command_errors_exit_125() {
     let root = tempfile::tempdir().unwrap();
     for args in [

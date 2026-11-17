@@ -388,9 +388,12 @@ pub struct RunArgs {
 pub struct AttachArgs {
     /// Full workload UUID or an unambiguous prefix, ignoring case and hyphens.
     pub id: String,
-    /// Forward stdin; a host terminal uses raw mode and Ctrl-P Ctrl-Q detaches.
-    #[arg(long, short = 'i')]
+    /// Forward stdin (the default); retained for compatibility.
+    #[arg(long, short = 'i', conflicts_with = "no_stdin")]
     pub interactive: bool,
+    /// View output without forwarding stdin.
+    #[arg(long)]
+    pub no_stdin: bool,
 }
 
 /// Wait for one or more workloads.

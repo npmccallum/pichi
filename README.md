@@ -35,7 +35,7 @@ is still a valid image — a base others derive from.
 | `pichi tag` / `rmi` | Manage tags (refcount-aware blob GC) |
 | `pichi pull` / `push` | Move artifacts to and from an OCI registry |
 | `pichi run` | Boot an artifact under madrillo; `-d` prints a durable workload ID, `-i` forwards stdin, `-t` enables terminal mode |
-| `pichi attach` | Attach to live console output; `-i` also forwards input |
+| `pichi attach` | Attach to live console input/output; `--no-stdin` views output only |
 | `pichi logs` | Print retained stdout/stderr for one or more workload IDs |
 | `pichi wait` | Wait for one or more workload IDs and print their native exit statuses in argument order |
 | `pichi stop` | Stop one or more workloads; force cleanup after `--time` seconds per workload (default 10) |
@@ -172,7 +172,10 @@ requesting shutdown. Foreground run prints its
 ID on stderr; detached run prints it on stdout. `run -it` uses raw input on a host
 terminal; Ctrl-P Ctrl-Q detaches.
 `run -i` forwards stdin without raw mode or resize, while `run -t` sends terminal
-dimensions without forwarding stdin. `attach -i` uses raw mode on a host terminal.
+dimensions without forwarding stdin. `attach` forwards stdin by default and uses
+raw mode on a host terminal; `--no-stdin` disables input forwarding and raw mode.
+The existing `attach -i` spelling remains accepted. Each attachment uses its own
+host terminal, independently of the original `run` flags.
 Piped input remains binary. Multiple interactive
 attachments may write input. Input EOF releases that attachment's input while
 madrillo keeps dillo's liveness pipe open. Attachment is live
@@ -188,11 +191,11 @@ receiving output; terminal detach discards unsent input and leaves the VM runnin
 On Unix, SIGQUIT ends the attachment with status 131 after restoring the host
 terminal; the supervised VM keeps running.
 
-A host terminal with `run -t` or `attach -i` sends its initial dimensions and
+A host terminal with `run -t` or `attach` sends its initial dimensions and
 subsequent changes
 directly to Dillo's private resize endpoint. Reattachment supplies the new
 terminal's dimensions, including after a detached launch. Output-only `run -t`
-can resize too; output-only attachments and piped input do not change guest size.
+and `attach --no-stdin` can resize too; piped input does not change guest size.
 Madrillo does not interpret these updates. Guest resize requires Linux's
 [virtio-console cols/rows fix](https://github.com/torvalds/linux/commit/5326ab737a47278dbd16ed3ee7380b26c7056ddd)
 or a backport; older kernels interpret the standard dimensions in reverse.

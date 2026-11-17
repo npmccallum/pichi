@@ -1317,7 +1317,7 @@ impl Workload {
                     response => bail!("attachment rejected: {response:?}"),
                 }
             }
-            console::Console::open(interactive, interactive)?
+            console::Console::open(interactive, true)?
                 .view(&mut client, &resize)
                 .await
         }

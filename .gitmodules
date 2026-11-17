@@ -1,3 +1,0 @@
-[submodule "appliance/dillo"]
-	path = appliance/dillo
-	url = https://github.com/pichi-vm/dillo

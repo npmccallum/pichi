@@ -67,22 +67,15 @@ jobs:
           git config --global core.longpaths true
           git config --global core.autocrlf false
 
-      - name: 📥 Initialize native Dillo source
-        if: runner.os != 'Linux'
-        run: git submodule update --init appliance/dillo
-
       - name: ♻️ Restore build cache
         # Avoid sandbox-denied sudo purge (pichi-vm/pichi#188).
         # Unreleased fix; switch to @v2 once it ships in a release.
         uses: Swatinem/rust-cache@master
         with:
-          workspaces: |
-            . -> target
-            appliance/dillo -> target
+          workspaces: . -> target
           cache-targets: false
           cache-directories: |
             ${{ github.workspace }}/target
-            ${{ github.workspace }}/appliance/dillo/target
           save-if: ${{ runner.environment == 'github-hosted' || github.ref == 'refs/heads/main' }}
 
       - name: 📦 Install Python with TOML support
@@ -123,17 +116,19 @@ jobs:
 
       - name: 🔨 Build native Dillo
         if: runner.os != 'Linux'
-        working-directory: appliance/dillo
         run: |
-          cargo "+$NIGHTLY" --config .copr/cargo-config.toml build --locked --release --bin dillo
+          revision=$(python3 -c 'import sys, tomllib; lock = tomllib.load(open("Cargo.lock", "rb")); sys.stdout.write(next(p["source"].rsplit("#", 1)[1] for p in lock["package"] if p["name"] == "dillo"))')
+          cargo "+$NIGHTLY" --config "$GITHUB_WORKSPACE/.cargo/config.toml" install \
+            --git https://github.com/pichi-vm/dillo --rev "$revision" --locked --bin dillo \
+            --root "$GITHUB_WORKSPACE/target/native-dillo" --target-dir "$GITHUB_WORKSPACE/target/native-dillo-build" dillo
           suffix=''
           if [ "$RUNNER_OS" = Windows ]; then suffix='.exe'; fi
-          dillo="$GITHUB_WORKSPACE/appliance/dillo/target/release/dillo$suffix"
+          dillo="$GITHUB_WORKSPACE/target/native-dillo/bin/dillo$suffix"
           if [ "$RUNNER_OS" = macOS ]; then
             printf '%s\n' '<plist version="1.0"><dict><key>com.apple.security.hypervisor</key><true/></dict></plist>' > "$RUNNER_TEMP/hypervisor.plist"
             codesign --force --sign - --entitlements "$RUNNER_TEMP/hypervisor.plist" "$dillo"
           fi
-          echo "$GITHUB_WORKSPACE/appliance/dillo/target/release" >> "$GITHUB_PATH"
+          echo "$GITHUB_WORKSPACE/target/native-dillo/bin" >> "$GITHUB_PATH"
 
       - name: ⚙️ Prepare KVM
         if: runner.os == 'Linux'

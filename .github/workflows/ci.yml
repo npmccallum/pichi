@@ -58,7 +58,7 @@ jobs:
           fi
           changed=$(git diff --name-only "$base" "$head" -- \
             appliance/image deps/pichi-launch \
-            Cargo.toml Cargo.lock .gitmodules 'src/cmd/build*.rs' src/cmd/build \
+            Cargo.toml Cargo.lock 'src/cmd/build*.rs' src/cmd/build \
             .github/workflows/platforms.yml)
           appliance=false
           if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then changed=""; fi

@@ -38,7 +38,7 @@ is still a valid image — a base others derive from.
 | `pichi attach` | Attach to live console output; `-i` also forwards input |
 | `pichi logs` | Print retained stdout/stderr for one or more workload IDs |
 | `pichi wait` | Wait for one or more workload IDs and print their native exit statuses in argument order |
-| `pichi stop` | Request console shutdown; force cleanup after `--time` seconds (default 10) |
+| `pichi stop` | Stop one or more workloads; force cleanup after `--time` seconds per workload (default 10) |
 | `pichi ps` | List running and unknown workloads; `-a` includes exited workloads and `-q` prints only full IDs |
 | `pichi update` | Update a working-tree plan’s image lock |
 | `pichi build` | Build via a VM appliance (thin launcher; see [BUILD.md](BUILD.md)) |

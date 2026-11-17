@@ -409,11 +409,12 @@ pub struct LogsArgs {
     pub ids: Vec<String>,
 }
 
-/// Stop a workload through its console shutdown contract.
+/// Stop one or more workloads through their console shutdown contracts.
 #[derive(Debug, ClapArgs)]
 pub struct StopArgs {
-    /// Full workload UUID or an unambiguous prefix, ignoring case and hyphens.
-    pub id: String,
+    /// Full workload UUIDs or unambiguous prefixes, in stop order.
+    #[arg(required = true)]
+    pub ids: Vec<String>,
 
     /// Seconds to wait for clean shutdown before forcing cleanup (0 forces immediately).
     #[arg(long, short = 't', default_value_t = 10)]

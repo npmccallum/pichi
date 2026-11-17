@@ -699,14 +699,19 @@ async fn stop_requests_console_eof_and_preserves_the_original_exit_status() {
         .assert()
         .success();
     let id = String::from_utf8(output.get_output().stdout.clone()).unwrap();
-    for selector in [id.trim(), &id[..8]] {
-        fixture
-            .command()
-            .args(["stop", selector])
-            .assert()
-            .success()
-            .stdout(format!("{selector}\n"));
-    }
+    fixture
+        .command()
+        .args(["stop", id.trim(), "00000000-0000-0000-0000-000000000000"])
+        .assert()
+        .code(125)
+        .stdout("");
+    assert!(!fixture.record().join("monitor/result.json").exists());
+    fixture
+        .command()
+        .args(["stop", id.trim(), &id[..8]])
+        .assert()
+        .success()
+        .stdout(format!("{}\n{}\n", id.trim(), &id[..8]));
     fixture
         .command()
         .args(["wait", id.trim()])

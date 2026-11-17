@@ -234,8 +234,8 @@ console data outside the build guest's cache mount.
 ## Source checkout
 
 Cargo fetches the pinned Conglobate library as a Git dependency. No submodule
-checkout is needed to build Pichi. The native Windows/macOS CI jobs initialize
-`appliance/dillo` to build their launcher.
+checkout is needed. The native Windows/macOS CI jobs build their Dillo launcher
+from the revision pinned in `Cargo.lock`.
 
 ## License
 

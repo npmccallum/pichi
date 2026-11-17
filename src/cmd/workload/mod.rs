@@ -1485,12 +1485,30 @@ impl Workload {
         }
     }
 
-    pub async fn list(config: &crate::config::Config, all: bool, quiet: bool) -> Result<()> {
+    pub async fn list(
+        config: &crate::config::Config,
+        all: bool,
+        quiet: bool,
+        json: bool,
+    ) -> Result<()> {
+        #[derive(serde::Serialize)]
+        #[serde(rename_all = "PascalCase")]
+        struct Row {
+            #[serde(rename = "ID")]
+            id: uuid::Uuid,
+            state: &'static str,
+            images: Vec<conglobate::artifact::Digest>,
+        }
+
         let layout = config.resolve_layout()?;
         let Some(records) = record::Records::existing(&layout.graphroot)? else {
+            if json {
+                println!("[]");
+            }
             return Ok(());
         };
-        if !quiet {
+        let mut rows = Vec::new();
+        if !quiet && !json {
             println!("ID                                   STATE    IMAGES");
         }
         for record in records.list()? {
@@ -1525,17 +1543,28 @@ impl Workload {
                     "unknown"
                 }
             };
-            println!(
-                "{} {:8} {}",
-                record.id(),
-                status,
-                record
-                    .images()
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(",")
-            );
+            if json {
+                rows.push(Row {
+                    id: record.id(),
+                    state: status,
+                    images: record.images().to_vec(),
+                });
+            } else {
+                println!(
+                    "{} {:8} {}",
+                    record.id(),
+                    status,
+                    record
+                        .images()
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(",")
+                );
+            }
+        }
+        if json {
+            println!("{}", serde_json::to_string_pretty(&rows)?);
         }
         Ok(())
     }

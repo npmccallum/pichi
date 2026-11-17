@@ -12,6 +12,8 @@ fn usage_and_command_errors_exit_125() {
     let root = tempfile::tempdir().unwrap();
     for args in [
         vec!["run"],
+        vec!["ps", "-q", "--format", "json"],
+        vec!["ps", "--format", "unsupported"],
         vec!["--does-not-exist"],
         vec!["inspect", "missing:latest"],
     ] {
@@ -52,4 +54,19 @@ fn configuration_errors_exit_125_but_help_and_version_succeed() {
             .assert()
             .success();
     }
+}
+
+#[test]
+fn empty_workload_json_is_an_array() {
+    let root = tempfile::tempdir().unwrap();
+    Command::cargo_bin("pichi")
+        .unwrap()
+        .env("XDG_DATA_HOME", root.path())
+        .env("XDG_CONFIG_HOME", root.path())
+        .env("LOCALAPPDATA", root.path())
+        .env("APPDATA", root.path())
+        .args(["ps", "--format", "json"])
+        .assert()
+        .success()
+        .stdout("[]\n");
 }

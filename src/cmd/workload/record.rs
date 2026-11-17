@@ -370,7 +370,10 @@ impl Record {
                             Err(error) => return Err(error.into()),
                         }
                     }
-                    Ok(_) => bail!("unexpected file at console resize endpoint"),
+                    Ok(_) => log::warn!(
+                        "leaving unexpected file at console resize endpoint {}",
+                        endpoint.display()
+                    ),
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                     Err(error) => return Err(error.into()),
                 }
@@ -663,7 +666,11 @@ mod tests {
         let root = tempfile::tempdir()?;
         let cache = root.path().join("cache");
         std::fs::create_dir(&cache)?;
-        let record = Records::open(&cache)?.reserve(vec![Digest::Sha256([1; 32])])?;
+        let record = Records::open(&cache)?.create(
+            vec![Digest::Sha256([1; 32])],
+            root.path().join("control"),
+            Uuid::new_v4(),
+        )?;
         #[cfg(unix)]
         let _resize = {
             use interprocess::local_socket::{GenericFilePath, ListenerOptions, prelude::*};
@@ -713,6 +720,19 @@ mod tests {
                     record.run.resize_endpoint().exists(),
                     result.cleanup != CleanupResult::Complete
                 );
+            }
+        }
+        #[cfg(unix)]
+        {
+            drop(_resize);
+            let endpoint = record.run.resize_endpoint();
+            std::fs::write(&endpoint, b"not a workload socket")?;
+            std::fs::create_dir(record.storage_directory())?;
+            std::fs::write(&backing, b"guest data")?;
+            for _ in 0..2 {
+                Record::at(record.run.path())?.release_runtime_files()?;
+                assert_eq!(std::fs::read(&endpoint)?, b"not a workload socket");
+                assert!(!backing.exists(), "complete cleanup still releases storage");
             }
         }
         Ok(())

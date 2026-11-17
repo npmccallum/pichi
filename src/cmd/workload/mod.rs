@@ -280,10 +280,14 @@ mod tests {
         let graphroot = root.path().join("cache");
         std::fs::create_dir(&graphroot)?;
         let records = record::Records::open(&graphroot)?;
-        for accepted in [false, true] {
+        for (accepted, malformed) in [(false, false), (true, false), (true, true), (false, true)] {
             let id = uuid::Uuid::new_v4();
             #[cfg(unix)]
-            let endpoint = root.path().join(format!("{accepted}.sock"));
+            let endpoint = root.path().join(format!(
+                "{}{}.sock",
+                u8::from(accepted),
+                u8::from(malformed)
+            ));
             #[cfg(windows)]
             let endpoint = PathBuf::from(format!(r"\\.\pipe\pichi-attach-{id}"));
             let listener = ListenerOptions::new()
@@ -319,6 +323,8 @@ mod tests {
                 std::fs::write(state.join("result.json"), serde_json::to_vec(&completion)?)?;
                 let message = if accepted {
                     ServerMessage::Attached { input: false }
+                } else if malformed {
+                    ServerMessage::Prepared { monitor_pid: 1 }
                 } else {
                     ServerMessage::Completed {
                         result: completion.clone(),
@@ -333,6 +339,9 @@ mod tests {
                         .into(),
                     )
                     .await?;
+                if accepted && malformed {
+                    server.send(b"invalid response".to_vec().into()).await?;
+                }
                 #[cfg(windows)]
                 {
                     let interprocess::local_socket::tokio::Stream::NamedPipe(pipe) =
@@ -346,7 +355,16 @@ mod tests {
             })
             .await?;
             served?;
-            if accepted {
+            if accepted && malformed {
+                assert!(result.unwrap_err().is::<serde_json::Error>());
+            } else if malformed {
+                assert!(
+                    result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("attachment rejected")
+                );
+            } else if accepted {
                 assert_eq!(result?, 23);
             } else {
                 assert!(
@@ -1314,6 +1332,9 @@ impl Workload {
                         break;
                     }
                     ServerMessage::Started { .. } => {}
+                    ServerMessage::Completed { .. } => {
+                        bail!("can only attach to running workloads")
+                    }
                     response => bail!("attachment rejected: {response:?}"),
                 }
             }
@@ -1324,11 +1345,16 @@ impl Workload {
         .await;
         match result {
             Ok(code) => Ok(code),
-            Err(error) => match Record::at(&path)?.run.completion()? {
-                Some(result) if attached => Outcome(result).code(),
-                Some(_) => bail!("can only attach to running workloads"),
-                None => Err(error).context("workload state is unknown; image pins remain retained"),
-            },
+            Err(error) if error.is::<client::ConnectionError>() => {
+                match Record::at(&path)?.run.completion()? {
+                    Some(result) if attached => Outcome(result).code(),
+                    Some(_) => bail!("can only attach to running workloads"),
+                    None => {
+                        Err(error).context("workload state is unknown; image pins remain retained")
+                    }
+                }
+            }
+            Err(error) => Err(error),
         }
     }
 

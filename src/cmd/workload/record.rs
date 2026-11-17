@@ -33,12 +33,12 @@ pub(crate) struct Records {
 #[derive(Debug)]
 pub(crate) struct Record {
     identity: Identity,
-    pub(super) run: Run,
+    pub(crate) run: Run,
 }
 
 /// One boot's monitor state, diagnostics and control endpoint.
 #[derive(Debug)]
-pub(super) struct Run {
+pub(crate) struct Run {
     path: PathBuf,
     directory: Dir,
     endpoint: PathBuf,

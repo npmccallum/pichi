@@ -16,6 +16,22 @@ use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 
 const MAX_FRAME: usize = 1024 * 1024;
 
+/// Transport failure, distinct from malformed responses and host console I/O.
+#[derive(Debug)]
+pub(super) struct ConnectionError(std::io::Error);
+
+impl std::fmt::Display for ConnectionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl std::error::Error for ConnectionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
 /// The monitor's stream, which on Windows must not flush when dropped.
 #[derive(Debug)]
 struct Wire(Stream);
@@ -149,7 +165,10 @@ impl Sender {
         if frame.len() > MAX_FRAME {
             bail!("monitor request exceeds frame limit");
         }
-        self.0.send(bytes::Bytes::from(frame)).await?;
+        self.0
+            .send(bytes::Bytes::from(frame))
+            .await
+            .map_err(ConnectionError)?;
         Ok(())
     }
 }
@@ -160,7 +179,19 @@ impl Receiver {
             .0
             .next()
             .await
-            .context("monitor disconnected without completion")??;
+            .unwrap_or_else(|| {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "monitor disconnected without completion",
+                ))
+            })
+            .map_err(|error| -> anyhow::Error {
+                if error.kind() == std::io::ErrorKind::InvalidData {
+                    error.into()
+                } else {
+                    ConnectionError(error).into()
+                }
+            })?;
         let response: Response = serde_json::from_slice(&frame)?;
         if response.version != PROTOCOL_VERSION {
             bail!("unsupported monitor protocol {}", response.version);

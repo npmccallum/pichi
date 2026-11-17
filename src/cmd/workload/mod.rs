@@ -587,6 +587,74 @@ mod tests {
         } else {
             assert_eq!(records.pins()?, record.images());
         }
+        // Consume the normal final response, then lose the connection before
+        // viewing again. Only the retained result can satisfy the second view.
+        assert!(matches!(
+            running.client.next().await?,
+            ServerMessage::Completed { result } if result == completion
+        ));
+        assert_eq!(running.view(&record, false, false).await?, 0);
+        let result_path = record.run.state().join("result.json");
+        let saved_result = std::fs::read(&result_path)?;
+        std::fs::remove_file(&result_path)?;
+        assert!(
+            running
+                .view(&record, false, false)
+                .await
+                .unwrap_err()
+                .is::<client::ConnectionError>()
+        );
+        std::fs::write(&result_path, b"invalid result")?;
+        assert!(
+            running
+                .view(&record, false, false)
+                .await
+                .unwrap_err()
+                .is::<client::ConnectionError>()
+        );
+        std::fs::write(&result_path, saved_result)?;
+        // A retained success must not hide malformed protocol or console
+        // output errors. Use the native transport without the live monitor.
+        {
+            use futures_util::SinkExt;
+            use interprocess::local_socket::{GenericFilePath, ListenerOptions, tokio::prelude::*};
+            use tokio_util::codec::{Framed, LengthDelimitedCodec};
+
+            #[cfg(unix)]
+            let endpoint = root.path().join("view.sock");
+            #[cfg(windows)]
+            let endpoint = PathBuf::from(format!(r"\\.\pipe\pichi-view-{}", record.id()));
+            let listener = ListenerOptions::new()
+                .name(endpoint.as_path().to_fs_name::<GenericFilePath>()?)
+                .create_tokio()?;
+            for frame in [
+                b"invalid response".to_vec(),
+                serde_json::to_vec(&madrillo::Response {
+                    version: madrillo::PROTOCOL_VERSION,
+                    message: ServerMessage::Output {
+                        stream: "invalid stream".into(),
+                        bytes: vec![1],
+                    },
+                })?,
+            ] {
+                let serving = async {
+                    let mut server =
+                        Framed::new(listener.accept().await?, LengthDelimitedCodec::new());
+                    server.send(frame.into()).await?;
+                    Ok::<_, anyhow::Error>(server)
+                };
+                let viewing = async {
+                    running.client = Client::connect(&endpoint).await?;
+                    running.view(&record, false, false).await
+                };
+                let (server, result) = tokio::time::timeout(Duration::from_secs(5), async {
+                    tokio::join!(serving, viewing)
+                })
+                .await?;
+                let _server = server?;
+                assert!(!result.unwrap_err().is::<client::ConnectionError>());
+            }
+        }
         drop(attached);
         drop(running);
         // Exercise forced stop through the same native transport on every host.
@@ -829,9 +897,16 @@ impl Running {
         interactive: bool,
         tty: bool,
     ) -> Result<u32> {
-        console::Console::open(interactive, tty)?
+        let result = console::Console::open(interactive, tty)?
             .view(&mut self.client, &record.run.resize_endpoint())
-            .await
+            .await;
+        match result {
+            Err(error) if error.is::<client::ConnectionError>() => match record.run.completion() {
+                Ok(Some(result)) => Outcome(result).code(),
+                _ => Err(error),
+            },
+            result => result,
+        }
     }
 
     pub(crate) async fn wait(&mut self, capture: Option<&File>) -> Result<Completion> {

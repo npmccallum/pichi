@@ -47,6 +47,10 @@ impl Smoke {
     }
 
     fn run(&self, label: &str, args: &[&str]) -> String {
+        self.run_status(label, args, 0)
+    }
+
+    fn run_status(&self, label: &str, args: &[&str], expected: i32) -> String {
         let path = self.directory.join(format!("{label}.log"));
         let errors = self.directory.join(format!("{label}.stderr.log"));
         let mut command = Command::new(&self.binary);
@@ -87,8 +91,9 @@ impl Smoke {
             panic!("{label} timed out; see {}", path.display());
         }
         let text = fs::read_to_string(&path).unwrap();
-        assert!(
-            status.unwrap().success(),
+        assert_eq!(
+            status.unwrap().code(),
+            Some(expected),
             "{label} failed:\n{text}\n{}",
             fs::read_to_string(&errors).unwrap()
         );
@@ -289,7 +294,15 @@ impl Smoke {
         assert!(self.run("logs", &["logs", &id]).contains("PICHI_SMOKE_OK"));
         assert_eq!(self.run("wait", &["wait", &id]).trim(), "0");
         assert_eq!(self.run("stop", &["stop", &id]).trim(), id);
-        self.run("attach-exited", &["attach", &id]);
+        assert!(
+            self.run_status("attach-exited", &["attach", &id], 125)
+                .is_empty()
+        );
+        let error = fs::read_to_string(self.directory.join("attach-exited.stderr.log")).unwrap();
+        assert!(
+            error.contains("can only attach to running workloads"),
+            "{error}"
+        );
     }
 }
 

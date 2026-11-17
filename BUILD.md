@@ -656,10 +656,11 @@ The fail-fast platform matrix runs `x86-linux` (KVM), `arm-linux` (KVM),
 workspace tests against local Zot, and `tests/command_smoke.rs`. The latter is
 ignored by plain `cargo test` because it requires a real hypervisor and registry;
 CI explicitly checks that the test exists and executes it. Missing prerequisites
-fail the job. Every CLI leaf executes successfully, including both import kinds,
-all three manifest operations, and both system operations. The build copies a
-known payload into a derived bootable image; a guest service verifies the payload
-and powers off. The test requires its success marker and a successful exit.
+fail the job. Every CLI leaf is exercised with its expected status, including both
+import kinds, all three manifest operations, and both system operations. Attaching
+to the completed guest must return 125 and a running-only diagnostic. The build
+copies a known payload into a derived bootable image; a guest service verifies
+the payload and powers off. The test requires its success marker and a successful exit.
 
 The current commit runs against the candidate when rebuilt, otherwise the
 published default appliance. CI selects the corresponding ignored test explicitly:

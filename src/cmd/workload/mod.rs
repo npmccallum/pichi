@@ -57,6 +57,7 @@ impl Launch<'_> {
             self.state.into(),
             "--listen".into(),
             self.endpoint.into(),
+            "--start-gated".into(),
         ];
         if self.input {
             options.push("--stdin".into());
@@ -695,6 +696,63 @@ mod tests {
                 "native Pichi exact inheritance: opaque bytes, excluded handle and EOF passed"
             );
         }
+
+        // A prepared monitor must wait for authorization. Observers can
+        // attach before then and receive Started before completion.
+        let gated = tempfile::tempdir()?;
+        #[cfg(unix)]
+        let endpoint = gated.path().join("control");
+        #[cfg(windows)]
+        let endpoint = PathBuf::from(format!(r"\\.\pipe\pichi-gated-{}", uuid::Uuid::new_v4()));
+        let marker = gated.path().join("guest-started");
+        let mut running = ReapMonitor(
+            Launch {
+                monitor: &monitor,
+                program: &fixture,
+                arguments: &["touch".into(), marker.clone().into()],
+                state: &gated.path().join("monitor"),
+                endpoint: &endpoint,
+                input: false,
+                inherited: Vec::new(),
+                held: Vec::new(),
+                cleanup: None,
+            }
+            .spawn()
+            .await?,
+        );
+        assert!(matches!(
+            running.client.next().await?,
+            ServerMessage::Prepared { monitor_pid } if monitor_pid == running.monitor.id()
+        ));
+        let mut observers = Vec::new();
+        for _ in 0..2 {
+            let mut client = Client::connect(&endpoint).await?;
+            client
+                .send(ClientMessage::Attach {
+                    input: false,
+                    streams: Vec::new(),
+                })
+                .await?;
+            assert!(matches!(
+                client.next().await?,
+                ServerMessage::Attached { input: false }
+            ));
+            observers.push(client);
+        }
+        let mut attached = observers.pop().context("attachment")?;
+        let mut waiting = observers.pop().context("waiter")?;
+        waiting.send(ClientMessage::Wait).await?;
+        assert!(!marker.exists(), "guest ran before authorization");
+        running.client.send(ClientMessage::Start).await?;
+        let resize = endpoint.with_extension("resize");
+        let console = console::Console::open(false, false)?;
+        let (waited, viewed) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(waiting.wait(false), console.view(&mut attached, &resize))
+        })
+        .await?;
+        assert_eq!(waited?.leader, LeaderResult::Exit { code: 0 });
+        assert_eq!(viewed?, 0);
+        assert_eq!(std::fs::read(marker)?, b"invoked");
         Ok(())
     }
 }
@@ -806,6 +864,7 @@ impl Running {
                 ServerMessage::Prepared { monitor_pid } if monitor_pid == self.monitor.id() => {}
                 response => bail!("unexpected monitor preparation: {response:?}"),
             }
+            self.client.send(ClientMessage::Start).await?;
             match self.client.next().await? {
                 ServerMessage::Started { leader_pid } => Ok(leader_pid),
                 response => bail!("workload did not start: {response:?}"),
@@ -861,6 +920,7 @@ impl Client {
         loop {
             match self.next().await? {
                 ServerMessage::Output { stream, bytes } => output(&stream, &bytes)?,
+                ServerMessage::Started { .. } => {}
                 ServerMessage::Completed { result } => return Ok(result),
                 ServerMessage::Error { code, message } => bail!("monitor {code:?}: {message}"),
                 response => bail!("unexpected monitor response: {response:?}"),
@@ -964,9 +1024,12 @@ impl Workload {
                     streams: Vec::new(),
                 })
                 .await?;
-            match client.next().await? {
-                ServerMessage::Attached { input } if input == interactive => {}
-                response => bail!("attachment rejected: {response:?}"),
+            loop {
+                match client.next().await? {
+                    ServerMessage::Attached { input } if input == interactive => break,
+                    ServerMessage::Started { .. } => {}
+                    response => bail!("attachment rejected: {response:?}"),
+                }
             }
             console::Console::open(interactive, interactive)?
                 .view(&mut client, &self.0.run.resize_endpoint())

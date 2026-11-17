@@ -39,11 +39,15 @@ impl Resize<'_> {
                 }
                 Err(error)
                     if last.is_none()
-                        && error
-                            .downcast_ref::<std::io::Error>()
-                            .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+                        && error.downcast_ref::<std::io::Error>().is_some_and(|error| {
+                            matches!(
+                                error.kind(),
+                                std::io::ErrorKind::NotFound
+                                    | std::io::ErrorKind::ConnectionRefused
+                            )
+                        }) =>
                 {
-                    // Dillo creates its listener after the monitor starts it.
+                    // Dillo may not have bound or started listening yet.
                     log::debug!("console resize endpoint is not ready; retrying");
                 }
                 Err(error) => {

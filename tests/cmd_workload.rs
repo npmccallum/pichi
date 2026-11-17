@@ -488,6 +488,8 @@ listener = socket.socket(socket.AF_UNIX)
 time.sleep(0.5)
 listener.bind(endpoint)
 os.chmod(endpoint, 0o600)
+# A bound socket also exists before it accepts resize connections.
+time.sleep(0.5)
 listener.listen(2)
 os.write(1, b'console-ready\n')
 try:

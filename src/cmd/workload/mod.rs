@@ -265,8 +265,8 @@ mod tests {
         let workload = Workload(records.create(vec![image], endpoint, id)?);
         let error = workload.stop(Duration::ZERO).await.unwrap_err();
         assert!(error.to_string().contains("workload state is unknown"));
-        assert!(workload.0.run.completion()?.is_none());
-        assert_eq!(records.pins()?, workload.0.images());
+        assert!(records.get(id)?.run.completion()?.is_none());
+        assert_eq!(records.pins()?, records.get(id)?.images());
         Ok(())
     }
 
@@ -412,12 +412,20 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(5)).await;
         };
         assert!(!status.success());
-        let workload = Workload(records.get(record.id())?);
         for _ in 0..2 {
             for error in [
-                workload.wait().await.unwrap_err(),
-                workload.stop(Duration::ZERO).await.unwrap_err(),
-                workload.attach(false).await.unwrap_err(),
+                Workload(records.get(record.id())?)
+                    .wait()
+                    .await
+                    .unwrap_err(),
+                Workload(records.get(record.id())?)
+                    .stop(Duration::ZERO)
+                    .await
+                    .unwrap_err(),
+                Workload(records.get(record.id())?)
+                    .attach(false)
+                    .await
+                    .unwrap_err(),
             ] {
                 assert!(error.to_string().contains("workload state is unknown"));
             }
@@ -581,7 +589,13 @@ mod tests {
             .context("missing retained completion")?;
         assert_eq!(completion.leader, LeaderResult::Exit { code: 0 });
         // After the monitor has exited, repeated stop reads the durable result.
-        assert_eq!(workload.stop(Duration::ZERO).await?.0, completion);
+        assert_eq!(
+            Workload(records.get(record.id())?)
+                .stop(Duration::ZERO)
+                .await?
+                .0,
+            completion
+        );
         if completion.cleanup == madrillo::CleanupResult::Complete {
             assert_eq!(records.pins()?, Vec::new());
         } else {
@@ -681,6 +695,7 @@ mod tests {
             );
             running.started().await?;
             let started = std::time::Instant::now();
+            let id = workload.0.id();
             let result = workload.stop(grace).await?.0;
             assert!(started.elapsed() >= grace);
             assert_eq!(result.cause, madrillo::CompletionCause::Forced);
@@ -691,7 +706,7 @@ mod tests {
             ));
             #[cfg(windows)]
             assert!(matches!(result.leader, LeaderResult::Exit { code } if code != 0));
-            assert_eq!(workload.0.run.completion()?, Some(result));
+            assert_eq!(records.get(id)?.run.completion()?, Some(result));
             #[cfg(unix)]
             let status = running.monitor.inner_mut().wait()?;
             #[cfg(windows)]
@@ -1053,50 +1068,61 @@ impl Workload {
         self.0.id()
     }
 
-    pub async fn logs(&self) -> Result<()> {
+    pub async fn logs(self) -> Result<()> {
         let snapshot = logs::Snapshot::try_from(self.0.run.console_log()?)?;
+        drop(self);
         tokio::task::spawn_blocking(move || {
             snapshot.write_to(&mut std::io::stdout().lock(), &mut std::io::stderr().lock())
         })
         .await?
     }
 
-    pub async fn wait(&self) -> Result<Outcome> {
+    pub async fn wait(self) -> Result<Outcome> {
         self.0.release_runtime_files()?;
         if let Some(result) = self.0.run.completion()? {
             return Ok(Outcome(result));
         }
+        let (path, endpoint) = (
+            self.0.run.path().to_owned(),
+            self.0.run.endpoint().to_owned(),
+        );
+        drop(self);
         let result = async {
-            let mut client = Client::connect(self.0.run.endpoint()).await?;
+            let mut client = Client::connect(&endpoint).await?;
             client.send(ClientMessage::Wait).await?;
             client.wait(false).await
         }
         .await;
-        self.retained_or_error(result).map(Outcome)
+        Self::retained_or_error(&path, result).map(Outcome)
     }
 
-    pub async fn stop(&self, grace: Duration) -> Result<Outcome> {
+    pub async fn stop(self, grace: Duration) -> Result<Outcome> {
         self.0.release_runtime_files()?;
         if let Some(result) = self.0.run.completion()? {
             return Ok(Outcome(result));
         }
-        let result = async {
-            Client::connect(self.0.run.endpoint())
-                .await?
-                .stop(grace)
-                .await
-        }
-        .await;
-        self.retained_or_error(result).map(Outcome)
+        let (path, endpoint) = (
+            self.0.run.path().to_owned(),
+            self.0.run.endpoint().to_owned(),
+        );
+        drop(self);
+        let result = async { Client::connect(&endpoint).await?.stop(grace).await }.await;
+        Self::retained_or_error(&path, result).map(Outcome)
     }
 
-    pub async fn attach(&self, interactive: bool) -> Result<u32> {
+    pub async fn attach(self, interactive: bool) -> Result<u32> {
         self.0.release_runtime_files()?;
         if let Some(result) = self.0.run.completion()? {
             return Outcome(result).code();
         }
+        let (path, endpoint, resize) = (
+            self.0.run.path().to_owned(),
+            self.0.run.endpoint().to_owned(),
+            self.0.run.resize_endpoint(),
+        );
+        drop(self);
         let result = async {
-            let mut client = Client::connect(self.0.run.endpoint()).await?;
+            let mut client = Client::connect(&endpoint).await?;
             client
                 .send(ClientMessage::Attach {
                     input: interactive,
@@ -1111,24 +1137,36 @@ impl Workload {
                 }
             }
             console::Console::open(interactive, interactive)?
-                .view(&mut client, &self.0.run.resize_endpoint())
+                .view(&mut client, &resize)
                 .await
         }
         .await;
         match result {
             Ok(code) => Ok(code),
-            Err(error) => match self.0.run.completion()? {
+            Err(error) => match Record::at(&path)?.run.completion()? {
                 Some(result) => Outcome(result).code(),
                 None => Err(error).context("workload state is unknown; image pins remain retained"),
             },
         }
     }
 
-    fn retained_or_error(&self, result: Result<Completion>) -> Result<Completion> {
-        self.0.release_runtime_files()?;
+    fn retained_or_error(path: &Path, result: Result<Completion>) -> Result<Completion> {
+        let record = match Record::at(path) {
+            Ok(record) => record,
+            Err(error)
+                if result.is_ok()
+                    && error
+                        .downcast_ref::<std::io::Error>()
+                        .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+            {
+                return result;
+            }
+            Err(error) => return Err(error),
+        };
+        record.release_runtime_files()?;
         match result {
             Ok(result) => Ok(result),
-            Err(error) => match self.0.run.completion()? {
+            Err(error) => match record.run.completion()? {
                 Some(result) => Ok(result),
                 None => Err(error).context("workload state is unknown; image pins remain retained"),
             },

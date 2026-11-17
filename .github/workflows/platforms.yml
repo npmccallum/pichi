@@ -163,6 +163,12 @@ jobs:
           cargo test --locked -p pichi --lib native_monitor_launch_and_async_control -- --ignored --nocapture
           cargo test --locked -p pichi --test cmd_run build_channel_preserves_guest_first_exchange -- --ignored --nocapture
 
+      - name: 🧪 Verify native Windows terminal restoration
+        if: runner.os == 'Windows'
+        env:
+          CARGO_BUILD_RUSTFLAGS: "-D warnings"
+        run: cargo test --locked -p pichi --test cmd_run windows_terminal::interactive_resize_input_and_reattach -- --ignored --exact --nocapture
+
       - name: ⚙️ Create private Windows appliance cache
         if: inputs.build-appliance && runner.os == 'Windows'
         shell: pwsh

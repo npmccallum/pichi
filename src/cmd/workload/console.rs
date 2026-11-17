@@ -13,20 +13,44 @@ use tokio::sync::mpsc;
 /// Cap queued stdin batches beyond the bounded reader channel and active write.
 const READ_AHEAD: usize = 8;
 
-struct RawTerminal(bool);
+struct RawTerminal {
+    raw: bool,
+    // Windows disable_raw_mode sets cooked bits instead of restoring the
+    // original mode, which may already have been raw.
+    #[cfg(windows)]
+    original: Option<(crossterm_winapi::ConsoleMode, u32)>,
+}
 
 impl RawTerminal {
     fn open(raw: bool) -> Result<Self> {
+        #[cfg(windows)]
+        let original = if raw {
+            let console =
+                crossterm_winapi::ConsoleMode::from(crossterm_winapi::Handle::input_handle()?);
+            let mode = console.mode()?;
+            Some((console, mode))
+        } else {
+            None
+        };
         if raw {
             crossterm::terminal::enable_raw_mode()?;
         }
-        Ok(Self(raw))
+        Ok(Self {
+            raw,
+            #[cfg(windows)]
+            original,
+        })
     }
 }
 
 impl Drop for RawTerminal {
     fn drop(&mut self) {
-        if self.0 {
+        #[cfg(windows)]
+        if let Some((console, mode)) = &self.original {
+            let _ = console.set_mode(*mode);
+        }
+        #[cfg(not(windows))]
+        if self.raw {
             let _ = crossterm::terminal::disable_raw_mode();
         }
     }
@@ -185,7 +209,7 @@ impl Console {
                         continue;
                     };
                     let bytes = bytes.context("read console input")?;
-                    let (bytes, detached) = if self.terminal.0 { self.keys.consume(&bytes) } else { (bytes, false) };
+                    let (bytes, detached) = if self.terminal.raw { self.keys.consume(&bytes) } else { (bytes, false) };
                     if detached {
                         // Closing this connection releases input without waiting
                         // for the guest to consume outstanding writes.

@@ -3150,6 +3150,7 @@ dependencies = [
  "conglobate",
  "corium",
  "crossterm",
+ "crossterm_winapi",
  "devmap-core",
  "devmap-verity",
  "dillo",

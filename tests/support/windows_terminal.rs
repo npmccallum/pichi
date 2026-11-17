@@ -102,10 +102,17 @@ struct Terminal {
     writer: Box<dyn Write + Send>,
     output: mpsc::Receiver<io::Result<Vec<u8>>>,
     received: Vec<u8>,
+    original_mode: PathBuf,
 }
 
 impl Terminal {
-    fn start(workload: &Workload, arguments: &[&str], cols: u16, rows: u16) -> Self {
+    fn start(
+        workload: &Workload,
+        arguments: &[&str],
+        cols: u16,
+        rows: u16,
+        initially_raw: bool,
+    ) -> Self {
         // This fixture hosts the CLI only. Unlike the monitor's workload Job,
         // it must permit Pichi to launch its independent Madrillo process.
         let pair = portable_pty::native_pty_system()
@@ -152,15 +159,33 @@ impl Terminal {
             "PICHI_TEST_TERMINAL_FIXTURE",
             std::env::current_exe().unwrap(),
         );
-        let child = pair.slave.spawn_command(command).unwrap();
-        Self {
+        let original_mode = workload.root.path().join("original-console-mode");
+        let mut prepare = CommandBuilder::new(std::env::current_exe().unwrap());
+        prepare.args([
+            "windows_terminal::prepare_mode",
+            "--exact",
+            "--ignored",
+            "--nocapture",
+        ]);
+        prepare.env("PICHI_TEST_CONSOLE_MODE", &original_mode);
+        prepare.env(
+            "PICHI_TEST_INITIALLY_RAW",
+            if initially_raw { "1" } else { "0" },
+        );
+        let child = pair.slave.spawn_command(prepare).unwrap();
+        let mut terminal = Self {
             child,
             master: pair.master,
             slave: pair.slave,
             writer,
             output,
             received: Vec::new(),
-        }
+            original_mode,
+        };
+        terminal.expect("<<<MODE-SAVED>>>");
+        terminal.wait();
+        terminal.child = terminal.slave.spawn_command(command).unwrap();
+        terminal
     }
 
     fn expect(&mut self, marker: &str) {
@@ -240,6 +265,7 @@ impl Terminal {
             "--ignored",
             "--nocapture",
         ]);
+        command.env("PICHI_TEST_CONSOLE_MODE", &self.original_mode);
         self.child = self.slave.spawn_command(command).unwrap();
         self.expect("<<<TERMINAL-RESTORED>>>");
         self.wait();
@@ -257,7 +283,7 @@ impl Drop for Terminal {
 #[ignore = "requires real Madrillo and execution outside restrictive runner/Cargo Jobs"]
 async fn interactive_resize_input_and_reattach() {
     let workload = Workload::new().await;
-    let mut terminal = Terminal::start(&workload, &["run", "-i", "terminal:1"], 300, 77);
+    let mut terminal = Terminal::start(&workload, &["run", "-it", "terminal:1"], 300, 77, true);
     terminal.expect("<<<RESIZE-READY>>>");
     terminal.expect("<<<SIZE:300x77>>>");
     terminal.input();
@@ -265,7 +291,7 @@ async fn interactive_resize_input_and_reattach() {
     let id = workload.id();
     terminal.detach();
     drop(terminal);
-    let mut attached = Terminal::start(&workload, &["attach", "-i", &id], 81, 25);
+    let mut attached = Terminal::start(&workload, &["attach", "-i", &id], 81, 25, false);
     attached.expect("<<<SIZE:81x25>>>");
     attached.input();
     attached.detach();
@@ -277,7 +303,7 @@ async fn interactive_resize_input_and_reattach() {
     let workload = Workload::new().await;
     let id = String::from_utf8(workload.run(&["run", "-d", "terminal:1"])).unwrap();
     let id = id.trim();
-    let mut attached = Terminal::start(&workload, &["attach", "-i", id], 132, 43);
+    let mut attached = Terminal::start(&workload, &["attach", "-i", id], 132, 43, true);
     attached.expect("<<<SIZE:132x43>>>");
     attached.input();
     workload.run(&["stop", id]);
@@ -290,11 +316,34 @@ async fn interactive_resize_input_and_reattach() {
 }
 
 #[test]
+#[ignore = "internal console setup: invoked before Pichi in the same terminal"]
+fn prepare_mode() {
+    if std::env::var("PICHI_TEST_INITIALLY_RAW").unwrap() == "1" {
+        crossterm::terminal::enable_raw_mode().unwrap();
+    }
+    let console =
+        crossterm_winapi::ConsoleMode::from(crossterm_winapi::Handle::input_handle().unwrap());
+    std::fs::write(
+        std::env::var_os("PICHI_TEST_CONSOLE_MODE").unwrap(),
+        console.mode().unwrap().to_string(),
+    )
+    .unwrap();
+    println!("<<<MODE-SAVED>>>");
+}
+
+#[test]
 #[ignore = "internal console mode probe: invoked in the same terminal after Pichi exits"]
 fn restored() {
     use std::io::IsTerminal as _;
     assert!(io::stdin().is_terminal());
-    assert!(!crossterm::terminal::is_raw_mode_enabled().unwrap());
+    let original: u32 =
+        std::fs::read_to_string(std::env::var_os("PICHI_TEST_CONSOLE_MODE").unwrap())
+            .unwrap()
+            .parse()
+            .unwrap();
+    let console =
+        crossterm_winapi::ConsoleMode::from(crossterm_winapi::Handle::input_handle().unwrap());
+    assert_eq!(console.mode().unwrap(), original);
     println!("<<<TERMINAL-RESTORED>>>");
 }
 

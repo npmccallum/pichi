@@ -223,6 +223,13 @@ impl Records {
             bail!("a workload must pin between 1 and 1024 images");
         }
         let name = id.to_string();
+        // The image-index lock excludes other creators. Preserve an existing
+        // entry even if it is empty, which rename could otherwise replace.
+        match self.directory.symlink_metadata(&name) {
+            Ok(_) => return Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists).into()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
         let options = cap_std::fs::DirBuilder::new();
         #[cfg(unix)]
         let options = {
@@ -231,26 +238,41 @@ impl Records {
             options.mode(0o700);
             options
         };
-        self.directory.create_dir_with(&name, &options)?;
-        let directory = self.directory.open_dir_nofollow(&name)?;
         let identity = Identity {
             version: 1,
             id,
             images,
             endpoint,
         };
-        let mut file = directory.open_with(
-            "identity.json",
-            OpenOptions::new().write(true).create_new(true),
-        )?;
-        serde_json::to_writer(&mut file, &identity)?;
-        file.write_all(b"\n")?;
-        file.sync_all()?;
-        #[cfg(unix)]
-        {
+        // Observers do not hold the image-index lock. Publish only a complete
+        // identity; an interrupted creation must never look like a workload.
+        let staging = format!(".creating-{id}");
+        self.directory.create_dir_with(&staging, &options)?;
+        let published: Result<()> = (|| {
+            let directory = self.directory.open_dir_nofollow(&staging)?;
+            let mut file = directory.open_with(
+                "identity.json",
+                OpenOptions::new().write(true).create_new(true),
+            )?;
+            serde_json::to_writer(&mut file, &identity)?;
+            file.write_all(b"\n")?;
+            file.sync_all()?;
+            #[cfg(unix)]
             directory.open(".")?.sync_all()?;
-            self.directory.open(".")?.sync_all()?;
+            // Windows cannot rename a directory with open handles inside it.
+            drop((file, directory));
+            self.directory.rename(&staging, &self.directory, &name)?;
+            Ok(())
+        })();
+        if let Err(error) = published {
+            if let Err(cleanup) = self.directory.remove_dir_all(&staging) {
+                log::warn!("removing unpublished {staging}: {cleanup:#}");
+            }
+            return Err(error);
         }
+        #[cfg(unix)]
+        self.directory.open(".")?.sync_all()?;
+        let directory = self.directory.open_dir_nofollow(&name)?;
         Ok(Record {
             run: Run {
                 path: self.path.join(name),
@@ -304,10 +326,11 @@ impl Records {
         for entry in self.directory.entries()? {
             let entry = entry?;
             let name = entry.file_name();
-            let id = name
-                .to_str()
-                .context("invalid workload directory name")?
-                .parse::<Uuid>()?;
+            let name = name.to_str().context("invalid workload directory name")?;
+            if name.starts_with(".creating-") {
+                continue;
+            }
+            let id = name.parse::<Uuid>()?;
             if !entry.file_type()?.is_dir() {
                 bail!("workload identity must be a directory");
             }
@@ -612,6 +635,81 @@ mod tests {
                 .await??;
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    fn failed_creation_does_not_publish_an_incomplete_record() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let cache = root.path().join("cache");
+        std::fs::create_dir(&cache)?;
+        let records = Records::open(&cache)?;
+        #[cfg(unix)]
+        let endpoint = {
+            use std::os::unix::ffi::OsStringExt;
+            std::ffi::OsString::from_vec(vec![0xff])
+        };
+        #[cfg(windows)]
+        let endpoint = {
+            use std::os::windows::ffi::OsStringExt;
+            std::ffi::OsString::from_wide(&[0xd800])
+        };
+        // Path serialization fails after identity.json has been opened.
+        assert!(
+            records
+                .create(
+                    vec![Digest::Sha256([1; 32])],
+                    endpoint.into(),
+                    Uuid::new_v4()
+                )
+                .is_err()
+        );
+        assert!(records.list()?.is_empty());
+        assert!(records.pins()?.is_empty());
+        assert_eq!(records.directory.entries()?.count(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn unpublished_records_are_invisible_and_published_records_are_preserved() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let cache = root.path().join("cache");
+        std::fs::create_dir(&cache)?;
+        let records = Records::open(&cache)?;
+        // An interrupted creator never published this directory.
+        records
+            .directory
+            .create_dir(format!(".creating-{}", Uuid::new_v4()))?;
+        assert!(records.list()?.is_empty());
+        assert!(records.pins()?.is_empty());
+        let id = Uuid::new_v4();
+        let images = vec![Digest::Sha256([1; 32])];
+        let endpoint = root.path().join("control");
+        let record = records.create(images.clone(), endpoint.clone(), id)?;
+        assert_eq!(record.id(), id);
+        assert_eq!(records.list()?.len(), 1);
+        assert_eq!(records.pins()?, images);
+        assert!(
+            records
+                .create(vec![Digest::Sha256([2; 32])], endpoint, id)
+                .is_err()
+        );
+        assert_eq!(records.get(id)?.images(), images);
+        let empty = Uuid::new_v4();
+        records.directory.create_dir(empty.to_string())?;
+        assert!(
+            records
+                .create(images, root.path().join("control"), empty)
+                .is_err()
+        );
+        assert_eq!(
+            records
+                .directory
+                .open_dir_nofollow(empty.to_string())?
+                .entries()?
+                .count(),
+            0
+        );
         Ok(())
     }
 

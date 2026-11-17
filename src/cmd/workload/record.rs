@@ -833,6 +833,35 @@ mod tests {
                 assert!(!backing.exists(), "complete cleanup still releases storage");
             }
         }
+        // The foreground caller, stop observer and monitor exit command can
+        // all release the same completed workload at once.
+        for _ in 0..32 {
+            std::fs::create_dir(record.storage_directory())?;
+            std::fs::write(&backing, b"guest data")?;
+            std::fs::write(record.storage_directory().join(".lock"), b"")?;
+            let observers = (0..3)
+                .map(|_| Record::at(record.run.path()))
+                .collect::<Result<Vec<_>>>()?;
+            let barrier = std::sync::Barrier::new(observers.len());
+            std::thread::scope(|scope| {
+                let workers: Vec<_> = observers
+                    .into_iter()
+                    .map(|observer| {
+                        let barrier = &barrier;
+                        scope.spawn(move || {
+                            barrier.wait();
+                            observer.release_runtime_files()
+                        })
+                    })
+                    .collect();
+                for worker in workers {
+                    worker.join().expect("cleanup worker panicked")?;
+                }
+                Ok::<_, anyhow::Error>(())
+            })?;
+            assert!(!record.storage_directory().exists());
+            assert!(record.run.completion()?.is_some());
+        }
         Ok(())
     }
 

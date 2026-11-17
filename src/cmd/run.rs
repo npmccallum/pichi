@@ -105,14 +105,16 @@ pub async fn run(args: RunArgs, config: &Config) -> Result<u32> {
         })
         .await?;
     let arguments: Vec<OsString> = dillo_args.into_iter().map(OsString::from).collect();
+    let (held, inherited) = storage
+        .map(WritableStorage::into_boot)
+        .transpose()?
+        .into_iter()
+        .unzip();
     let mut running = Running::start(
         &record.run,
         &arguments,
-        Vec::new(),
-        storage
-            .map(WritableStorage::into_monitor)
-            .into_iter()
-            .collect(),
+        inherited,
+        held,
         args.interactive && !args.detach,
     )
     .await?;

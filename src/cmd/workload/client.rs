@@ -98,7 +98,8 @@ impl Client {
             Stream::connect(path.to_fs_name::<GenericFilePath>()?),
         )
         .await
-        .context("monitor connect deadline")??;
+        .context("monitor connect deadline")?
+        .map_err(ConnectionError)?;
         #[cfg(unix)]
         if stream.peer_creds()?.euid() != Some(nix::unistd::geteuid().as_raw()) {
             bail!("monitor endpoint belongs to another account");

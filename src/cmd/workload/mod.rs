@@ -283,7 +283,7 @@ mod tests {
         for accepted in [false, true] {
             let id = uuid::Uuid::new_v4();
             #[cfg(unix)]
-            let endpoint = root.path().join(format!("{id}.sock"));
+            let endpoint = root.path().join(format!("{accepted}.sock"));
             #[cfg(windows)]
             let endpoint = PathBuf::from(format!(r"\\.\pipe\pichi-attach-{id}"));
             let listener = ListenerOptions::new()

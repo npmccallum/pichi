@@ -53,13 +53,13 @@ pub struct ImagesArgs {
     pub format: Option<String>,
 }
 
-/// Args for `pichi inspect <ref>` (LOCAL-02 / D-20 image-index aware).
+/// Args for `pichi inspect <ref>...` (LOCAL-02 / D-20 image-index aware).
 #[derive(Debug, ClapArgs)]
 pub struct InspectArgs {
-    /// Image reference: `image:tag`, `image@sha256:...`, full registry path,
-    /// or dockerhub shorthand (LOCAL-05).
-    pub reference: String,
-    /// Output format: `json` (default, pretty-printed) or a minijinja (Jinja2)
+    /// One or more image references: tags, digests, registry paths or shorthand.
+    #[arg(required = true)]
+    pub references: Vec<String>,
+    /// Output format: `json` (default, always an array) or a per-image Jinja2
     /// template. Dotted annotation keys use subscripts, e.g.
     /// `{{ manifest.annotations["dev.pichi.carapace.verity.hash"] }}`.
     #[arg(long)]

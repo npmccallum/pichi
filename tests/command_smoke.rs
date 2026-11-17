@@ -102,7 +102,10 @@ impl Smoke {
     }
 
     fn inspect(&self, tag: &str) -> Value {
-        serde_json::from_str(&self.run("inspect", &["inspect", tag])).unwrap()
+        let mut values: Vec<Value> =
+            serde_json::from_str(&self.run("inspect", &["inspect", tag])).unwrap();
+        assert_eq!(values.len(), 1);
+        values.remove(0)
     }
 
     fn git(&self, args: &[&str]) {

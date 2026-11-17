@@ -31,7 +31,7 @@ is still a valid image — a base others derive from.
 |---|---|
 | `pichi import` | Import a raw image (+ optional PMI / DTB / config) into the cache |
 | `pichi images` | List cached artifacts |
-| `pichi inspect` | Inspect a cached image and its platform manifest |
+| `pichi inspect` | Inspect one or more cached images as a JSON array |
 | `pichi tag` / `rmi` | Manage tags (refcount-aware blob GC) |
 | `pichi pull` / `push` | Move artifacts to and from an OCI registry |
 | `pichi run` | Boot an artifact under madrillo; `-d` prints a durable workload ID, `-i` forwards stdin, `-t` enables terminal mode |
@@ -43,6 +43,12 @@ is still a valid image — a base others derive from.
 | `pichi update` | Update a working-tree plan’s image lock |
 | `pichi build` | Build via a VM appliance (thin launcher; see [BUILD.md](BUILD.md)) |
 | `pichi system` | System-level inspection and maintenance |
+
+`pichi inspect IMAGE...` emits one JSON array, including for a single image.
+Results follow argument order. Missing or invalid images are reported on stderr;
+other images are still inspected and the command exits with status 125.
+`--format` renders once per image with the existing object context. Scripts
+reading a single result should use `[0]`, for example `jq '.[0].digest'`.
 
 Run `pichi <command> --help` for details.
 

@@ -243,6 +243,7 @@ async fn import_without_pmi_has_no_pmi_layer() {
         .stdout
         .clone();
     let v: serde_json::Value = serde_json::from_slice(&inspect).unwrap();
+    let v = &v[0];
     let layers = v["manifest"]["layers"].as_array().expect("layers array");
     assert!(
         !layers

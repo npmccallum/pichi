@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-//! `pichi inspect <ref>` (LOCAL-02 / D-20 image-index aware).
+//! `pichi inspect <ref>...` (LOCAL-02 / D-20 image-index aware).
 //!
-//! Outputs the manifest and decoded launch config as JSON plus the resolved
+//! Outputs an array of manifests and decoded launch configs with each resolved
 //! content `digest` (the one datum a content-addressed manifest can't carry
 //! about itself). `--format`
 //! renders a minijinja (Jinja2) template — dotted OCI annotation keys are
@@ -66,18 +66,39 @@ struct IndexEntryInfo {
     is_pichi: bool,
 }
 
-/// `pichi inspect <ref>` entry point — print the cached manifest as
-/// pretty-printed JSON with the decoded launch config when present.
+/// Inspect cached images in order, retaining successful results after errors.
 pub async fn run(args: InspectArgs, config: &Config) -> Result<()> {
     let layout = config.resolve_layout()?;
     let db = FilesystemTagDb::open(&layout.graphroot)?;
     let blob_store = FilesystemBlobStore::new(&layout.graphroot);
 
-    let target_ref: Reference = super::build::canonicalize_reference(&args.reference)
-        .parse()
-        .with_context(|| format!("invalid reference: {}", args.reference))?;
+    let mut values = Vec::new();
+    let mut failed = false;
+    for reference in &args.references {
+        match inspect_one(reference, &db, &blob_store).await {
+            Ok(value) => values.push(value),
+            Err(error) => {
+                eprintln!("Error: {reference}: {error:#}");
+                failed = true;
+            }
+        }
+    }
+    args.emit(&values)?;
+    anyhow::ensure!(!failed, "one or more images could not be inspected");
+    Ok(())
+}
 
-    let digest = blob_store.resolve(&target_ref, &db).await?;
+// Resolve one image without printing so a batch remains one JSON document.
+async fn inspect_one(
+    reference: &str,
+    db: &FilesystemTagDb,
+    blob_store: &FilesystemBlobStore,
+) -> Result<Value> {
+    let target_ref: Reference = super::build::canonicalize_reference(reference)
+        .parse()
+        .with_context(|| format!("invalid reference: {reference}"))?;
+
+    let digest = blob_store.resolve(&target_ref, db).await?;
     let metadata = blob_store.metadata(&digest).await?;
     if metadata.is_index() {
         let selected = match metadata.selected_entry() {
@@ -96,12 +117,10 @@ pub async fn run(args: InspectArgs, config: &Config) -> Result<()> {
             Err(_) => None,
         };
         let config = match &selected {
-            Some(image) => {
-                super::requirements::load_config(&image.manifest()?, &blob_store).await?
-            }
+            Some(image) => super::requirements::load_config(&image.manifest()?, blob_store).await?,
             None => None,
         };
-        return inspect_index(args, &digest, &metadata.value, selected, config);
+        return inspect_index(&digest, &metadata.value, selected, config);
     }
     let bytes = metadata.bytes;
     let value = metadata.value;
@@ -110,22 +129,21 @@ pub async fn run(args: InspectArgs, config: &Config) -> Result<()> {
     // plus its resolved digest.
     let manifest = Manifest::decode_json(bytes.as_slice())
         .with_context(|| format!("validating manifest {digest}"))?;
-    let launch_config = super::requirements::load_config(&manifest, &blob_store).await?;
+    let launch_config = super::requirements::load_config(&manifest, blob_store).await?;
     let output = InspectOutput {
         digest: digest.to_string(),
         manifest: value,
         config: launch_config,
     };
-    args.emit(&output)
+    Ok(serde_json::to_value(output)?)
 }
 
 fn inspect_index(
-    args: InspectArgs,
     digest: &Digest,
     value: &Value,
     selected: Option<super::cache::ImageMetadata>,
     config: Option<conglobate::artifact::Config>,
-) -> Result<()> {
+) -> Result<Value> {
     let mut entries = Vec::new();
     let manifests = value
         .get("manifests")
@@ -176,32 +194,35 @@ fn inspect_index(
         manifest: selected.map(|image| image.value),
         config,
     };
-    args.emit(&output)
+    Ok(serde_json::to_value(output)?)
 }
 
 impl InspectArgs {
-    /// Emit `value` per the `--format` selection (default: pretty JSON).
+    /// Emit a JSON array, or render the template once per inspected image.
     ///
     /// Templates are rendered with minijinja (Jinja2). Dotted OCI annotation
     /// keys are reached with subscript syntax — no data reshaping needed:
     /// `{{ manifest.annotations["dev.pichi.carapace.verity.hash"] }}`. For
     /// docker familiarity, a leading `{{.field}}` is accepted and normalised to
     /// `{{ field }}`.
-    fn emit<T: Serialize>(&self, value: &T) -> Result<()> {
+    fn emit(&self, values: &[Value]) -> Result<()> {
         match &self.format {
-            None => println!("{}", serde_json::to_string_pretty(value)?),
-            Some(t) if t == "json" => println!("{}", serde_json::to_string_pretty(value)?),
+            None => println!("{}", serde_json::to_string_pretty(values)?),
+            Some(t) if t == "json" => println!("{}", serde_json::to_string_pretty(values)?),
             Some(template_in) => {
                 let template = normalize_template_syntax(template_in);
                 let env = Environment::new();
                 let tmpl = env
                     .template_from_str(&template)
                     .with_context(|| format!("invalid --format template: {template_in:?}"))?;
-                println!(
-                    "{}",
-                    tmpl.render(value)
-                        .with_context(|| format!("rendering --format template: {template_in:?}"))?
-                );
+                for value in values {
+                    println!(
+                        "{}",
+                        tmpl.render(value).with_context(|| {
+                            format!("rendering --format template: {template_in:?}")
+                        })?
+                    );
+                }
             }
         }
         Ok(())

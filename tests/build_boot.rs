@@ -185,6 +185,7 @@ async fn pichi_build_boots_official_image_to_poweroff() {
     let inspect = pichi(g, &[], &["inspect", "smoke:out"]);
     assert_pichi_ok("inspect output requirements", &inspect);
     let output: serde_json::Value = serde_json::from_slice(&inspect.stdout).unwrap();
+    let output = &output[0];
     assert_eq!(output["config"]["version"], 1);
     assert_eq!(output["config"]["requirements"], requirements);
 }

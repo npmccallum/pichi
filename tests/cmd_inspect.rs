@@ -83,6 +83,7 @@ async fn inspect_bare_manifest_returns_full_schema() {
         .clone();
     let s = String::from_utf8(out).unwrap();
     let v: serde_json::Value = serde_json::from_str(&s).expect("inspect output must be JSON");
+    let v = &v[0];
     // Output is the manifest verbatim plus the resolved digest — no computed
     // `_pichi` summary (everything is derivable from the manifest itself).
     assert_eq!(v["digest"].as_str(), Some(digest.to_string().as_str()));
@@ -195,6 +196,7 @@ async fn inspect_image_index_lists_entries() {
         .clone();
     let s = String::from_utf8(out).unwrap();
     let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+    let v = &v[0];
     assert_eq!(
         v["media_type"].as_str(),
         Some("application/vnd.oci.image.index.v1+json")
@@ -270,6 +272,7 @@ async fn inspect_decodes_launch_config_for_bare_and_indexed_images() {
             .stdout
             .clone();
         let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
+        let value = &value[0];
         assert_eq!(value["config"], config);
         assert_eq!(
             value["manifest"]["config"]["digest"],
@@ -288,4 +291,103 @@ async fn inspect_decodes_launch_config_for_bare_and_indexed_images() {
             .success()
             .stdout("max\n");
     }
+}
+
+#[tokio::test]
+async fn inspect_batch_preserves_order_duplicates_and_partial_success() {
+    let tmp = TempDir::new().unwrap();
+    let root = graphroot(&tmp);
+    let store = FilesystemBlobStore::new(&root);
+    let tags = FilesystemTagDb::open(&root).unwrap();
+    let mut digests = Vec::new();
+    for name in ["first", "second"] {
+        let manifest = Manifest {
+            schema_version: 2,
+            media_type: "application/vnd.oci.image.manifest.v1+json".into(),
+            artifact_type: MEDIA_TYPE_PICHI_ARTIFACT_V1.into(),
+            config: ConfigDescriptor::canonical(),
+            layers: vec![Layer::Pmi(PmiDescriptor {
+                digest: format!("sha256:{}", "11".repeat(32)),
+                size: 4096,
+            })],
+            annotations: [("org.opencontainers.image.title".into(), name.into())].into(),
+        };
+        let bytes = serde_json::to_vec(&manifest).unwrap();
+        let digest = conglobate::artifact::Digest::Sha256(
+            <sha2::Sha256 as sha2::Digest>::digest(&bytes).into(),
+        );
+        store.put_blob(&digest, &bytes).await.unwrap();
+        tags.set_tag(&format!("docker.io/library/{name}:1"), &digest)
+            .await
+            .unwrap();
+        digests.push(digest.to_string());
+    }
+    let broken = conglobate::artifact::Digest::Sha256(
+        <sha2::Sha256 as sha2::Digest>::digest(b"invalid metadata").into(),
+    );
+    store.put_blob(&broken, b"invalid metadata").await.unwrap();
+    tags.set_tag("docker.io/library/broken:1", &broken)
+        .await
+        .unwrap();
+
+    let output = Command::cargo_bin("pichi")
+        .unwrap()
+        .env("XDG_DATA_HOME", tmp.path())
+        .args([
+            "inspect", "absent:1", "second:1", "broken:1", "first:1", "second:1", "absent:2",
+        ])
+        .assert()
+        .code(125)
+        .get_output()
+        .clone();
+    let values: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
+    let observed: Vec<_> = values
+        .iter()
+        .map(|value| value["digest"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        observed,
+        [
+            digests[1].as_str(),
+            digests[0].as_str(),
+            digests[1].as_str()
+        ]
+    );
+    let errors = String::from_utf8(output.stderr).unwrap();
+    for reference in ["absent:1", "broken:1", "absent:2"] {
+        assert!(errors.contains(reference), "{errors}");
+    }
+    Command::cargo_bin("pichi")
+        .unwrap()
+        .env("XDG_DATA_HOME", tmp.path())
+        .args([
+            "inspect",
+            "second:1",
+            "absent:1",
+            "first:1",
+            "--format",
+            "{{ digest }}",
+        ])
+        .assert()
+        .code(125)
+        .stdout(format!("{}\n{}\n", digests[1], digests[0]));
+    Command::cargo_bin("pichi")
+        .unwrap()
+        .env("XDG_DATA_HOME", tmp.path())
+        .args(["inspect", "absent:1", "broken:1"])
+        .assert()
+        .code(125)
+        .stdout("[]\n");
+    let output = Command::cargo_bin("pichi")
+        .unwrap()
+        .env("XDG_DATA_HOME", tmp.path())
+        .args(["inspect", "first:1", "--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let values: Vec<serde_json::Value> = serde_json::from_slice(&output).unwrap();
+    assert_eq!(values.len(), 1);
+    assert_eq!(values[0]["digest"], digests[0]);
 }

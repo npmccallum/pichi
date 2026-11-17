@@ -376,6 +376,22 @@ impl Record {
     pub(crate) fn release_runtime_files(&self) -> Result<()> {
         if matches!(self.run.completion()?, Some(result) if result.cleanup == CleanupResult::Complete)
         {
+            // Concurrent Windows removals can observe a delete-pending file as
+            // access denied. Keep the cleanup lock outside the removed tree.
+            let lock = self.run.directory.open_with(
+                "cleanup.lock",
+                OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(true)
+                    .truncate(false)
+                    .follow(FollowSymlinks::No),
+            )?;
+            if !lock.metadata()?.is_file() {
+                bail!("workload cleanup lock must be a regular file");
+            }
+            let lock = lock.into_std();
+            lock.lock().context("locking workload cleanup")?;
             #[cfg(unix)]
             {
                 use std::os::unix::fs::{FileTypeExt, MetadataExt};

@@ -380,12 +380,16 @@ async fn detached_launch_is_discoverable_and_later_wait_reads_retained_exit() {
         .assert()
         .success()
         .stdout("23\n");
-    fixture
+    let refused = fixture
         .command()
         .args(["attach", prefix])
         .assert()
-        .code(23)
+        .code(125)
         .stdout("");
+    assert!(
+        String::from_utf8_lossy(&refused.get_output().stderr)
+            .contains("can only attach to running workloads")
+    );
     fixture
         .command()
         .args(["logs", prefix])

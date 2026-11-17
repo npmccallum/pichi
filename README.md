@@ -163,7 +163,9 @@ the first build pulls it and continues. Full contract: [BUILD.md](BUILD.md).
 
 `attach`, `logs`, `wait`, and `stop` accept a full workload UUID or a unique ID
 prefix. Prefixes ignore case and hyphens; ambiguous prefixes are rejected before
-acting on a workload.
+acting on a workload. `attach` refuses a workload that has already exited,
+including one that exits before the monitor accepts the attachment. Use `wait`
+for its retained exit status and `logs` for its recorded output.
 
 Install `madrillo` and `dillo` on PATH. Dillo must support console closure
 requesting shutdown. Foreground run prints its

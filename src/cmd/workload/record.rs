@@ -576,29 +576,29 @@ mod tests {
                         path.join("monitor/result.json"),
                         serde_json::to_vec(&result)?,
                     )?;
+                    let mut responses = Vec::new();
+                    if operation == "attach" {
+                        responses.push(madrillo::ServerMessage::Attached { input: false });
+                    }
                     if removed {
                         // The observer is blocked on this connection. Windows
                         // refuses removal if it still owns the record directory.
                         records.directory.remove_dir_all(id.to_string())?;
                         assert!(!path.exists());
-                        let mut responses = Vec::new();
-                        if operation == "attach" {
-                            responses.push(madrillo::ServerMessage::Attached { input: false });
-                        }
                         responses.push(madrillo::ServerMessage::Completed { result });
-                        for message in responses {
-                            server
-                                .send(
-                                    serde_json::to_vec(&madrillo::Response {
-                                        version: madrillo::PROTOCOL_VERSION,
-                                        message,
-                                    })?
-                                    .into(),
-                                )
-                                .await?;
-                        }
                     }
-                    // Without a response, the retained result supplies the
+                    for message in responses {
+                        server
+                            .send(
+                                serde_json::to_vec(&madrillo::Response {
+                                    version: madrillo::PROTOCOL_VERSION,
+                                    message,
+                                })?
+                                .into(),
+                            )
+                            .await?;
+                    }
+                    // Without completion, the retained result supplies the
                     // fallback; with removal, the confirmed response must stand.
                     if !removed {
                         drop(server);

@@ -513,6 +513,105 @@ mod tests {
     use pichi_storage::{BlobStore, FilesystemBlobStore, FilesystemTagDb, TagDb};
     use sha2::{Digest as _, Sha256};
 
+    #[tokio::test]
+    async fn observers_release_directories_and_keep_completion_fallback() -> Result<()> {
+        use crate::cmd::workload::Workload;
+        use futures_util::{SinkExt, StreamExt};
+        use interprocess::local_socket::{GenericFilePath, ListenerOptions, tokio::prelude::*};
+        use std::time::Duration;
+        use tokio_util::codec::{Framed, LengthDelimitedCodec};
+
+        for operation in ["wait", "stop", "attach"] {
+            for removed in [false, true] {
+                let root = tempfile::tempdir()?;
+                let graphroot = root.path().join("cache");
+                std::fs::create_dir(&graphroot)?;
+                let records = Records::open(&graphroot)?;
+                let id = Uuid::new_v4();
+                #[cfg(unix)]
+                let endpoint = root.path().join("observer.sock");
+                #[cfg(windows)]
+                let endpoint = PathBuf::from(format!(r"\\.\pipe\pichi-observer-{id}"));
+                let listener = ListenerOptions::new()
+                    .name(endpoint.as_path().to_fs_name::<GenericFilePath>()?)
+                    .create_tokio()?;
+                let record = records.create(vec![Digest::Sha256([0; 32])], endpoint, id)?;
+                let path = record.run.path().to_owned();
+                let observer = Workload(record);
+                let observing = tokio::spawn(async move {
+                    match operation {
+                        "wait" => observer.wait().await?.code(),
+                        "stop" => observer.stop(Duration::ZERO).await?.code(),
+                        _ => observer.attach(false).await,
+                    }
+                });
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    let mut server =
+                        Framed::new(listener.accept().await?, LengthDelimitedCodec::new());
+                    let frame = server
+                        .next()
+                        .await
+                        .context("observer disconnected before request")??;
+                    let request: madrillo::Request = serde_json::from_slice(&frame)?;
+                    assert!(matches!(
+                        (operation, request.message),
+                        ("wait", madrillo::ClientMessage::Wait)
+                            | ("stop", madrillo::ClientMessage::Terminate)
+                            | ("attach", madrillo::ClientMessage::Attach { .. })
+                    ));
+                    let result = Completion {
+                        version: madrillo::PROTOCOL_VERSION,
+                        leader: LeaderResult::Exit { code: 37 },
+                        cause: CompletionCause::LeaderExit,
+                        exited_at_unix_ms: 0,
+                        cleanup: CleanupResult::Complete,
+                        oom: OomEvidence::NoneObserved,
+                        log_errors: Vec::new(),
+                        monitor_errors: Vec::new(),
+                        monitor_warnings: Vec::new(),
+                        output_truncated: false,
+                    };
+                    std::fs::create_dir(path.join("monitor"))?;
+                    std::fs::write(
+                        path.join("monitor/result.json"),
+                        serde_json::to_vec(&result)?,
+                    )?;
+                    if removed {
+                        // The observer is blocked on this connection. Windows
+                        // refuses removal if it still owns the record directory.
+                        records.directory.remove_dir_all(id.to_string())?;
+                        assert!(!path.exists());
+                        let mut responses = Vec::new();
+                        if operation == "attach" {
+                            responses.push(madrillo::ServerMessage::Attached { input: false });
+                        }
+                        responses.push(madrillo::ServerMessage::Completed { result });
+                        for message in responses {
+                            server
+                                .send(
+                                    serde_json::to_vec(&madrillo::Response {
+                                        version: madrillo::PROTOCOL_VERSION,
+                                        message,
+                                    })?
+                                    .into(),
+                                )
+                                .await?;
+                        }
+                    }
+                    // Without a response, the retained result supplies the
+                    // fallback; with removal, the confirmed response must stand.
+                    if !removed {
+                        drop(server);
+                    }
+                    assert_eq!(observing.await??, 37);
+                    Ok::<_, anyhow::Error>(())
+                })
+                .await??;
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     fn id_prefixes_are_unique_case_insensitive_and_ignore_hyphens() -> Result<()> {
         let root = tempfile::tempdir()?;

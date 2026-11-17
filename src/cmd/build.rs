@@ -163,7 +163,6 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
     let storage = WritableStorage::prepare(
         Some(&reqs.storage),
         args.storage,
-        None,
         &record.storage_directory(),
     )?;
     if let Some(backing) = &storage {
@@ -409,8 +408,15 @@ async fn boot_serve_and_wait(
         ..
     } = pipes;
     let args: Vec<OsString> = args.iter().map(OsString::from).collect();
-    let mut running =
-        Running::start(record, &args, vec![device_rx, device_tx], held, false).await?;
+    let mut running = Running::start(
+        &record.run,
+        &args,
+        vec![device_rx, device_tx],
+        held,
+        false,
+        || Ok(()),
+    )
+    .await?;
     let (done, mut served) = tokio::sync::oneshot::channel();
     // Blocking named-port I/O has no monitor/VM ownership and must not keep
     // the async runtime alive if a missing result leaves cleanup unknown.
@@ -420,7 +426,7 @@ async fn boot_serve_and_wait(
             let _ = done.send(serve_build_port(host_rx, host_tx, &response));
         });
     if let Err(error) = worker {
-        let cleanup = running.terminate(record).await;
+        let cleanup = running.terminate(&record.run).await;
         return Err(error).context(format!(
             "start build-port reader; monitor cleanup: {cleanup:?}"
         ));
@@ -447,7 +453,7 @@ async fn boot_serve_and_wait(
         Err(error) => {
             // No PID lookup: the authenticated live monitor owns termination.
             // Failure keeps the retained output and all uncertain image pins.
-            let cleanup = running.terminate(record).await;
+            let cleanup = running.terminate(&record.run).await;
             return Err(error).context(format!("build failed; monitor cleanup: {cleanup:?}"));
         }
     };

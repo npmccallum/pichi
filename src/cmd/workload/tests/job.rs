@@ -59,6 +59,7 @@ async fn caller() -> Result<()> {
             state: &root.join("state"),
             endpoint: &endpoint,
             input: true,
+            gated: false,
             inherited: Vec::new(),
             held: Vec::new(),
             cleanup: None,

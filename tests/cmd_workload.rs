@@ -148,6 +148,30 @@ impl WorkloadFixture {
         records[0].clone()
     }
 
+    /// The selected boot's directory: an instance's run, else the record.
+    fn run(&self) -> PathBuf {
+        let record = self.record();
+        match self.identity()["attempt"]["id"].as_str() {
+            Some(attempt) => record.join("runs").join(attempt),
+            None => record,
+        }
+    }
+
+    fn endpoint(&self) -> PathBuf {
+        let identity = self.identity();
+        PathBuf::from(
+            identity["attempt"]["endpoint"]
+                .as_str()
+                .or(identity["endpoint"].as_str())
+                .unwrap(),
+        )
+    }
+
+    fn identity(&self) -> serde_json::Value {
+        serde_json::from_slice(&std::fs::read(self.record().join("identity.json")).unwrap())
+            .unwrap()
+    }
+
     fn command(&self) -> Command {
         let mut command = Command::from_std(self.native_command());
         command.timeout(Duration::from_secs(15));
@@ -367,10 +391,7 @@ async fn detached_launch_is_discoverable_and_later_wait_reads_retained_exit() {
     // A later caller uses the retained address even with a different TMPDIR.
     // Launch must respect the configured native temp directory, which may be
     // the only location writable inside the caller's filesystem sandbox.
-    let identity: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(fixture.record().join("identity.json")).unwrap())
-            .unwrap();
-    let endpoint: PathBuf = serde_json::from_value(identity["endpoint"].clone()).unwrap();
+    let endpoint = fixture.endpoint();
     assert_eq!(endpoint.parent(), Some(fixture.root.path()));
     // The endpoint is gone after monitor exit; the same command uses state.
     fixture
@@ -456,7 +477,7 @@ async fn caller_group_loss_preserves_workload_and_reconnection() {
         assert!(!status.success());
         drop(writer);
         assert!(
-            !record.join("monitor/result.json").exists(),
+            !fixture.run().join("monitor/result.json").exists(),
             "caller death ended workload"
         );
         fixture
@@ -549,13 +570,10 @@ os._exit(37)
         .assert()
         .success();
     let id = String::from_utf8(output.get_output().stdout.clone()).unwrap();
-    let record = fixture.record();
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {
-        let identity: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(record.join("identity.json")).unwrap()).unwrap();
-        let endpoint = PathBuf::from(format!("{}.resize", identity["endpoint"].as_str().unwrap()));
-        if record.join("monitor/result.json").exists() && !endpoint.exists() {
+        let endpoint = PathBuf::from(format!("{}.resize", fixture.endpoint().display()));
+        if fixture.run().join("monitor/result.json").exists() && !endpoint.exists() {
             break;
         }
         assert!(
@@ -629,10 +647,9 @@ async fn stop_requests_console_eof_and_preserves_the_original_exit_status() {
         .assert()
         .success()
         .stdout("37\n");
-    let result: madrillo::Completion = serde_json::from_slice(
-        &std::fs::read(fixture.record().join("monitor/result.json")).unwrap(),
-    )
-    .unwrap();
+    let result: madrillo::Completion =
+        serde_json::from_slice(&std::fs::read(fixture.run().join("monitor/result.json")).unwrap())
+            .unwrap();
     assert_eq!(result.cause, madrillo::CompletionCause::LeaderExit);
 }
 
@@ -659,7 +676,7 @@ async fn stop_forces_after_grace_and_zero_forces_immediately() {
             assert!(started.elapsed() >= Duration::from_secs(1));
         }
         let result: madrillo::Completion = serde_json::from_slice(
-            &std::fs::read(fixture.record().join("monitor/result.json")).unwrap(),
+            &std::fs::read(fixture.run().join("monitor/result.json")).unwrap(),
         )
         .unwrap();
         assert_eq!(result.cause, madrillo::CompletionCause::Forced);
@@ -819,4 +836,88 @@ async fn blocked_console_input_observes_stop_and_caller_signals() {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+}
+
+#[tokio::test]
+async fn concurrent_restarts_admit_only_one_boot() {
+    let fixture =
+        WorkloadFixture::new("import signal\nsignal.alarm(30)\nwhile True: signal.pause()").await;
+    let started = fixture
+        .command()
+        .args(["run", "-d", "fixture:1"])
+        .assert()
+        .success();
+    let id = String::from_utf8(started.get_output().stdout.clone()).unwrap();
+    let id = id.trim();
+    fixture
+        .command()
+        .args(["stop", "--time", "0", id])
+        .assert()
+        .success();
+    let starts: Vec<_> = (0..2)
+        .map(|_| {
+            fixture
+                .native_command()
+                .args(["start", id])
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap()
+        })
+        .collect();
+    let mut outcomes = starts
+        .into_iter()
+        .map(|child| child.wait_with_output().unwrap())
+        .collect::<Vec<_>>();
+    outcomes.sort_by_key(|output| output.status.code());
+    assert_eq!(outcomes[0].status.code(), Some(0), "{outcomes:?}");
+    assert_eq!(outcomes[0].stdout, format!("{id}\n").as_bytes());
+    assert_eq!(outcomes[1].status.code(), Some(125), "{outcomes:?}");
+    assert!(String::from_utf8_lossy(&outcomes[1].stderr).contains("running or busy"));
+    assert_eq!(
+        std::fs::read_dir(fixture.record().join("runs"))
+            .unwrap()
+            .count(),
+        2
+    );
+    fixture
+        .command()
+        .args(["stop", "--time", "0", id])
+        .assert()
+        .success();
+}
+
+#[tokio::test]
+async fn failed_run_retains_a_removable_instance_without_a_selected_boot() {
+    let fixture = WorkloadFixture::new("raise RuntimeError('must not boot')").await;
+    fixture
+        .command()
+        .env("PATH", "")
+        .args(["run", "fixture:1"])
+        .assert()
+        .code(125);
+    let record = fixture.record();
+    let id = record.file_name().unwrap().to_str().unwrap();
+    fixture
+        .command()
+        .args(["wait", id])
+        .assert()
+        .success()
+        .stdout("0\n");
+    fixture
+        .command()
+        .args(["stop", id])
+        .assert()
+        .success()
+        .stdout(format!("{id}\n"));
+    fixture
+        .command()
+        .args(["logs", id])
+        .assert()
+        .success()
+        .stdout("");
+    fixture.command().args(["attach", id]).assert().code(125);
+    assert!(fixture.identity()["attempt"].is_null());
+    assert!(fixture.record().join("storage.qcow2").is_file());
+    fixture.command().args(["rm", id]).assert().success();
 }

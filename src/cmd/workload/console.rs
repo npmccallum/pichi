@@ -155,6 +155,8 @@ impl Console {
                     ServerMessage::Output { stream, bytes } => {
                         Self::write(&stream, &bytes)?;
                     }
+                    // An attachment can precede a gated boot's execution.
+                    ServerMessage::Started { .. } => {},
                     ServerMessage::Completed { result } => return Outcome(result).code(),
                     ServerMessage::Error { code: ErrorCode::InputClosed, .. } => {
                         // Keep receiving output and recognizing detach keys.

@@ -68,6 +68,10 @@ enum Command {
     Update(cli::UpdateArgs),
     /// Boot a cached artifact under madrillo supervision.
     Run(cli::RunArgs),
+    /// Start a saved instance.
+    Start(cli::StartArgs),
+    /// Remove a stopped instance and its private disk.
+    Rm(cli::WorkloadArgs),
     /// Attach to a workload's live console.
     Attach(cli::AttachArgs),
 
@@ -143,6 +147,14 @@ async fn run(cli: Cli) -> anyhow::Result<NativeExit> {
         },
         Command::Update(args) => cmd::update::run(args, &config).await,
         Command::Run(args) => return Ok(NativeExit(cmd::run::run(args, &config).await?)),
+        Command::Start(args) => return Ok(NativeExit(cmd::run::start(args, &config).await?)),
+        Command::Rm(args) => {
+            cmd::workload::Workload::open(args.id, &config)?
+                .remove(&config)
+                .await?;
+            println!("{}", args.id);
+            Ok(())
+        }
         Command::Attach(args) => {
             return Ok(NativeExit(
                 cmd::workload::Workload::open(args.id, &config)?
@@ -156,7 +168,9 @@ async fn run(cli: Cli) -> anyhow::Result<NativeExit> {
                 cmd::workload::Workload::open(args.id, &config)?
                     .wait()
                     .await?
-                    .code()?
+                    .map(|outcome| outcome.code())
+                    .transpose()?
+                    .unwrap_or(0)
             );
             Ok(())
         }
@@ -169,7 +183,8 @@ async fn run(cli: Cli) -> anyhow::Result<NativeExit> {
             cmd::workload::Workload::open(args.id, &config)?
                 .stop(std::time::Duration::from_secs(u64::from(args.time)))
                 .await?
-                .code()?;
+                .map(|outcome| outcome.code())
+                .transpose()?;
             println!("{}", args.id);
             Ok(())
         }

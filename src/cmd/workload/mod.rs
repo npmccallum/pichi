@@ -671,6 +671,92 @@ mod tests {
         }
         drop(attached);
         drop(running);
+        // A VMM can survive its monitor. Its disk must remain excluded until
+        // the surviving VMM exits, even though no monitor result can be written.
+        let record = records.reserve(record.images().to_vec())?;
+        let disk = root.path().join("orphaned-vmm.raw");
+        let storage = crate::cmd::writable_storage::WritableStorage::prepare(
+            None,
+            Some(2),
+            Some(&disk),
+            root.path(),
+        )?
+        .context("missing writable storage")?;
+        let (held, inherited) = storage.into_boot()?;
+        let gate = root.path().join("release-orphaned-vmm");
+        // This independent pipe proves child exit even if the lock under test
+        // fails, so cleanup cannot remove its release gate prematurely.
+        let (mut exited, alive) = std::io::pipe()?;
+        #[cfg(unix)]
+        let alive = File::from(std::os::fd::OwnedFd::from(alive));
+        #[cfg(windows)]
+        let alive = File::from(std::os::windows::io::OwnedHandle::from(alive));
+        let (send, receive) = std::sync::mpsc::sync_channel(1);
+        let reader = std::thread::spawn(move || {
+            let _ = send.send(std::io::copy(&mut exited, &mut std::io::sink()));
+        });
+        let ownership: Result<()> = async {
+            let mut running = ReapMonitor(
+                Launch {
+                    monitor: &monitor,
+                    program: &fixture,
+                    arguments: &["gated-echo".into(), gate.clone().into()],
+                    state: &record.run.state(),
+                    endpoint: record.run.endpoint(),
+                    input: false,
+                    inherited: vec![inherited, alive],
+                    held: vec![held],
+                    cleanup: None,
+                }
+                .spawn()
+                .await?,
+            );
+            running.started().await?;
+            #[cfg(unix)]
+            let monitor = running.monitor.inner_mut();
+            #[cfg(windows)]
+            let monitor = &mut running.monitor;
+            monitor.kill()?;
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while monitor.try_wait()?.is_none() {
+                anyhow::ensure!(
+                    std::time::Instant::now() < deadline,
+                    "monitor crash deadline"
+                );
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            anyhow::ensure!(
+                crate::cmd::writable_storage::WritableStorage::prepare(
+                    None,
+                    None,
+                    Some(&disk),
+                    root.path(),
+                )
+                .is_err(),
+                "monitor death released the surviving VMM's disk lock"
+            );
+            anyhow::ensure!(
+                record.run.completion()?.is_none(),
+                "crash invented completion"
+            );
+            Ok(())
+        }
+        .await;
+        std::fs::write(&gate, b"exit")?;
+        receive.recv_timeout(Duration::from_secs(5))??;
+        reader
+            .join()
+            .map_err(|_| anyhow::anyhow!("VMM exit reader panicked"))?;
+        ownership?;
+        let storage = crate::cmd::writable_storage::WritableStorage::prepare(
+            None,
+            None,
+            Some(&disk),
+            root.path(),
+        )?
+        .context("disk was not reusable after the VMM exited")?;
+        drop(storage);
+        println!("native disk exclusion survives monitor loss and ends with its VMM");
         // Exercise forced stop through the same native transport on every host.
         for grace in [Duration::from_millis(50), Duration::ZERO] {
             let workload = Workload(records.create(

@@ -192,10 +192,7 @@ pub async fn run(args: BuildArgs, config: &Config) -> Result<()> {
             pipes,
             response,
             log.as_ref(),
-            storage
-                .map(WritableStorage::into_monitor)
-                .into_iter()
-                .collect(),
+            storage.map(WritableStorage::into_boot).transpose()?,
         )
         .await?;
         // Explicit build success and successful VM exit precede OCI import.
@@ -399,7 +396,7 @@ async fn boot_serve_and_wait(
     pipes: build_port::BuildPortPipes,
     response: Vec<u8>,
     log: Option<&super::build_output::BuildLog>,
-    held: Vec<std::fs::File>,
+    storage: Option<(std::fs::File, std::fs::File)>,
 ) -> Result<()> {
     let build_port::BuildPortPipes {
         host_tx,
@@ -409,7 +406,9 @@ async fn boot_serve_and_wait(
         ..
     } = pipes;
     let args: Vec<OsString> = args.iter().map(OsString::from).collect();
-    let mut running = Running::start(run, &args, vec![device_rx, device_tx], held, false).await?;
+    let (held, mut inherited): (Vec<_>, Vec<_>) = storage.into_iter().unzip();
+    inherited.extend([device_rx, device_tx]);
+    let mut running = Running::start(run, &args, inherited, held, false).await?;
     let (done, mut served) = tokio::sync::oneshot::channel();
     // Blocking named-port I/O has no monitor/VM ownership and must not keep
     // the async runtime alive if a missing result leaves cleanup unknown.

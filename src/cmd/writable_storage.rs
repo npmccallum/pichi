@@ -141,13 +141,14 @@ impl WritableStorage {
         )
     }
 
-    /// Retain temporary backing in the workload record; its exit callback
-    /// removes it only after confirmed cleanup. Madrillo owns the reservation.
-    pub(super) fn into_monitor(self) -> File {
+    /// Retain temporary backing for confirmed cleanup and give both the
+    /// monitor and VMM a lock handle, in that order. Either can outlive the other.
+    pub(super) fn into_boot(self) -> Result<(File, File)> {
+        let inherited = self.lock.try_clone()?;
         if let Some(temporary) = self.temporary {
             let _ = temporary.keep();
         }
-        self.lock
+        Ok((self.lock, inherited))
     }
 }
 

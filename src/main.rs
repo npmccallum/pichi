@@ -80,8 +80,11 @@ enum Command {
     /// Shut down a workload, forcing cleanup after the grace period.
     Stop(cli::StopArgs),
 
-    /// List retained workloads, including unknown and completed workloads.
+    /// List running and unknown workloads.
     Ps {
+        /// Include exited workloads.
+        #[arg(long, short = 'a')]
+        all: bool,
         /// Print only full workload IDs, one per line.
         #[arg(long, short = 'q')]
         quiet: bool,
@@ -195,7 +198,7 @@ async fn run(cli: Cli) -> anyhow::Result<NativeExit> {
             println!("{}", args.id);
             Ok(())
         }
-        Command::Ps { quiet } => cmd::workload::Workload::list(&config, quiet).await,
+        Command::Ps { all, quiet } => cmd::workload::Workload::list(&config, all, quiet).await,
     }?;
     Ok(NativeExit(0))
 }

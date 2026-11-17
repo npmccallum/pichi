@@ -393,16 +393,17 @@ pub struct AttachArgs {
     pub interactive: bool,
 }
 
-/// Select a workload by its durable ID.
-#[derive(Debug, ClapArgs)]
-pub struct WorkloadArgs {
-    /// Full workload UUID or an unambiguous prefix, ignoring case and hyphens.
-    pub id: String,
-}
-
 /// Wait for one or more workloads.
 #[derive(Debug, ClapArgs)]
 pub struct WaitArgs {
+    /// Full workload UUIDs or unambiguous prefixes, in output order.
+    #[arg(required = true)]
+    pub ids: Vec<String>,
+}
+
+/// Read retained logs from one or more workloads.
+#[derive(Debug, ClapArgs)]
+pub struct LogsArgs {
     /// Full workload UUIDs or unambiguous prefixes, in output order.
     #[arg(required = true)]
     pub ids: Vec<String>,

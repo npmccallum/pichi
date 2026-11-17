@@ -36,7 +36,7 @@ is still a valid image — a base others derive from.
 | `pichi pull` / `push` | Move artifacts to and from an OCI registry |
 | `pichi run` | Boot an artifact under madrillo; `-d` prints a durable workload ID, `-i` forwards stdin, `-t` enables terminal mode |
 | `pichi attach` | Attach to live console output; `-i` also forwards input |
-| `pichi logs` | Print a snapshot of retained stdout/stderr for a workload ID |
+| `pichi logs` | Print retained stdout/stderr for one or more workload IDs |
 | `pichi wait` | Wait for one or more workload IDs and print their native exit statuses in argument order |
 | `pichi stop` | Request console shutdown; force cleanup after `--time` seconds (default 10) |
 | `pichi ps` | List running and unknown workloads; `-a` includes exited workloads and `-q` prints only full IDs |
@@ -200,7 +200,11 @@ Dillo exit. Unknown or incomplete cleanup preserves runtime files.
 streams, preserving binary bytes and partial-line fragments. It includes only
 complete CRI records present when the file is opened; a record still being
 written appears on a later invocation. Logs remain available after monitor exit
-or loss, independently of the live attachment endpoint.
+or loss, independently of the live attachment endpoint. With several IDs,
+`pichi logs ID...` prints each snapshot in argument order and prefixes each
+stream's lines with its workload's 12-digit ID. All IDs must resolve before
+output begins; a log read error is reported while other workloads continue,
+and the command exits with status 125.
 `pichi stop ID` closes Dillo's console input to request clean shutdown, even
 while other clients forward input. After 10 seconds it asks madrillo to force
 workload cleanup; `--time SECONDS` changes that grace period and `--time 0`

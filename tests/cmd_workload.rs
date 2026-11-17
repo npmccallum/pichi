@@ -613,6 +613,77 @@ async fn logs_preserve_binary_console_streams_after_monitor_exit() {
 }
 
 #[tokio::test]
+async fn multiple_logs_label_streams_and_continue_after_read_errors() {
+    let fixture = WorkloadFixture::new(
+        "import os\nos.write(1, b'first\\x00\\xff\\npartial')\nos.write(2, b'error\\x00\\xfe\\n')",
+    )
+    .await;
+    let mut ids = Vec::new();
+    for _ in 0..2 {
+        let output = fixture
+            .command()
+            .args(["run", "-d", "fixture:1"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let id = String::from_utf8(output).unwrap().trim().to_owned();
+        fixture.command().args(["wait", &id]).assert().success();
+        ids.push(id);
+    }
+    let prefixes: Vec<_> = ids
+        .iter()
+        .map(|id| {
+            format!(
+                "{} ",
+                &uuid::Uuid::parse_str(id).unwrap().simple().to_string()[..12]
+            )
+        })
+        .collect();
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    for prefix in &prefixes {
+        stdout.extend_from_slice(prefix.as_bytes());
+        stdout.extend_from_slice(b"first\0\xff\n");
+        stdout.extend_from_slice(prefix.as_bytes());
+        stdout.extend_from_slice(b"partial");
+        stderr.extend_from_slice(prefix.as_bytes());
+        stderr.extend_from_slice(b"error\0\xfe\n");
+    }
+    fixture
+        .command()
+        .args(["logs", &ids[0][..8], &ids[1][..8]])
+        .assert()
+        .success()
+        .stdout(stdout.clone())
+        .stderr(stderr);
+    fixture
+        .command()
+        .args(["logs", &ids[0], "missing"])
+        .assert()
+        .code(125)
+        .stdout("");
+    // A resolved workload with a missing log does not prevent reading the next.
+    std::fs::remove_file(
+        fixture
+            .root
+            .path()
+            .join("pichi/storage.workloads")
+            .join(&ids[0])
+            .join("monitor/console.log"),
+    )
+    .unwrap();
+    let failed = fixture
+        .command()
+        .args(["logs", &ids[0], &ids[1]])
+        .assert()
+        .code(125)
+        .stdout(stdout[stdout.len() / 2..].to_vec());
+    assert!(String::from_utf8_lossy(&failed.get_output().stderr).contains(&ids[0]));
+}
+
+#[tokio::test]
 async fn stop_requests_console_eof_and_preserves_the_original_exit_status() {
     let fixture = WorkloadFixture::new(
         "import os, signal\nsignal.alarm(5)\nwhile os.read(0, 4096): pass\nos._exit(37)",

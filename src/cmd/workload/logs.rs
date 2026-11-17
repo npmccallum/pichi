@@ -24,6 +24,40 @@ impl TryFrom<File> for Snapshot {
     }
 }
 
+/// Writes `prefix` at the start of every line it is given.
+pub(super) struct Prefixed<'a, W> {
+    inner: W,
+    prefix: &'a [u8],
+    start: bool,
+}
+
+impl<'a, W> Prefixed<'a, W> {
+    pub(super) fn new(inner: W, prefix: &'a [u8]) -> Self {
+        Self {
+            inner,
+            prefix,
+            start: true,
+        }
+    }
+}
+
+impl<W: Write> Write for Prefixed<'_, W> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        for line in bytes.split_inclusive(|byte| *byte == b'\n') {
+            if self.start {
+                self.inner.write_all(self.prefix)?;
+            }
+            self.inner.write_all(line)?;
+            self.start = line.ends_with(b"\n");
+        }
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
 impl Snapshot {
     pub(super) fn write_to(
         mut self,
@@ -91,6 +125,17 @@ mod tests {
         snapshot.write_to(&mut stdout, &mut stderr)?;
         assert_eq!(stdout, b"a\0\xffb\n\ntail");
         assert_eq!(stderr, b"error\n");
+        Ok(())
+    }
+
+    #[test]
+    fn prefixes_start_every_line_across_writes() -> Result<()> {
+        let mut out = Vec::new();
+        let mut prefixed = Prefixed::new(&mut out, b"id ");
+        prefixed.write_all(b"one\ntw")?;
+        prefixed.write_all(b"o\n\nthree")?;
+        prefixed.write_all(b"")?;
+        assert_eq!(out, b"id one\nid two\nid \nid three");
         Ok(())
     }
 

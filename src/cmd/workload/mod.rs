@@ -1060,11 +1060,19 @@ impl Workload {
         self.0.id()
     }
 
-    pub async fn logs(self) -> Result<()> {
+    pub async fn logs(self, labeled: bool) -> Result<()> {
         let snapshot = logs::Snapshot::try_from(self.0.run.console_log()?)?;
+        let prefix = if labeled {
+            format!("{} ", &self.0.id().simple().to_string()[..12])
+        } else {
+            String::new()
+        };
         drop(self);
         tokio::task::spawn_blocking(move || {
-            snapshot.write_to(&mut std::io::stdout().lock(), &mut std::io::stderr().lock())
+            snapshot.write_to(
+                &mut logs::Prefixed::new(std::io::stdout().lock(), prefix.as_bytes()),
+                &mut logs::Prefixed::new(std::io::stderr().lock(), prefix.as_bytes()),
+            )
         })
         .await?
     }

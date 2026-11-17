@@ -71,8 +71,8 @@ enum Command {
     /// Attach to a workload's live console.
     Attach(cli::AttachArgs),
 
-    /// Print retained console output for a workload.
-    Logs(cli::WorkloadArgs),
+    /// Print retained console output for one or more workloads.
+    Logs(cli::LogsArgs),
 
     /// Wait for workloads and print their exit statuses in argument order.
     Wait(cli::WaitArgs),
@@ -186,9 +186,28 @@ async fn run(cli: Cli) -> anyhow::Result<NativeExit> {
             Ok(())
         }
         Command::Logs(args) => {
-            cmd::workload::Workload::open(&args.id, &config)?
-                .logs()
-                .await
+            let ids = args
+                .ids
+                .iter()
+                .map(|id| cmd::workload::Workload::open(id, &config).map(|workload| workload.id()))
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            let mut failed = false;
+            for (selector, id) in args.ids.iter().zip(ids) {
+                let result = async {
+                    cmd::workload::Workload::open(&id.to_string(), &config)?
+                        .logs(args.ids.len() > 1)
+                        .await
+                }
+                .await;
+                if let Err(error) = result {
+                    eprintln!("Error: {selector}: {error:#}");
+                    failed = true;
+                }
+            }
+            if failed {
+                return Ok(NativeExit(EXIT_ERROR));
+            }
+            Ok(())
         }
         Command::Stop(args) => {
             cmd::workload::Workload::open(&args.id, &config)?

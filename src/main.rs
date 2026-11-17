@@ -77,7 +77,7 @@ enum Command {
     /// Wait for workloads and print their exit statuses in argument order.
     Wait(cli::WaitArgs),
 
-    /// Shut down a workload, forcing cleanup after the grace period.
+    /// Shut down workloads, forcing cleanup after each grace period.
     Stop(cli::StopArgs),
 
     /// List running and unknown workloads.
@@ -210,11 +210,32 @@ async fn run(cli: Cli) -> anyhow::Result<NativeExit> {
             Ok(())
         }
         Command::Stop(args) => {
-            cmd::workload::Workload::open(&args.id, &config)?
-                .stop(std::time::Duration::from_secs(u64::from(args.time)))
-                .await?
-                .code()?;
-            println!("{}", args.id);
+            let ids = args
+                .ids
+                .iter()
+                .map(|id| cmd::workload::Workload::open(id, &config).map(|workload| workload.id()))
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            let grace = std::time::Duration::from_secs(u64::from(args.time));
+            let mut failed = false;
+            for (selector, id) in args.ids.iter().zip(ids) {
+                let result = async {
+                    cmd::workload::Workload::open(&id.to_string(), &config)?
+                        .stop(grace)
+                        .await?
+                        .code()
+                }
+                .await;
+                match result {
+                    Ok(_) => println!("{selector}"),
+                    Err(error) => {
+                        eprintln!("Error: {selector}: {error:#}");
+                        failed = true;
+                    }
+                }
+            }
+            if failed {
+                return Ok(NativeExit(EXIT_ERROR));
+            }
             Ok(())
         }
         Command::Ps { all, quiet } => cmd::workload::Workload::list(&config, all, quiet).await,

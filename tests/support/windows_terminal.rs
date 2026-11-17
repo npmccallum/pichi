@@ -272,7 +272,7 @@ async fn interactive_resize_input_and_reattach() {
     let id = workload.id();
     terminal.detach();
     drop(terminal);
-    let mut attached = Terminal::start(&workload, &["attach", "-i", &id], 81, 25, false);
+    let mut attached = Terminal::start(&workload, &["attach", &id], 81, 25, false);
     attached.expect("<<<SIZE:81x25>>>");
     attached.input();
     attached.detach();
@@ -284,7 +284,7 @@ async fn interactive_resize_input_and_reattach() {
     let workload = Workload::new().await;
     let id = String::from_utf8(workload.run(&["run", "-d", "terminal:1"])).unwrap();
     let id = id.trim();
-    let mut attached = Terminal::start(&workload, &["attach", "-i", id], 132, 43, true);
+    let mut attached = Terminal::start(&workload, &["attach", id], 132, 43, true);
     attached.expect("<<<SIZE:132x43>>>");
     attached.input();
     workload.run(&["stop", id]);

@@ -472,7 +472,7 @@ async fn caller_group_loss_preserves_workload_and_reconnection() {
         );
         fixture
             .command()
-            .args(["attach", "-i", id])
+            .args(["attach", id])
             .write_stdin(b"again\n")
             .assert()
             .code(37)

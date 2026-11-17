@@ -153,7 +153,7 @@ async fn run(cli: Cli) -> anyhow::Result<NativeExit> {
         Command::Attach(args) => {
             return Ok(NativeExit(
                 cmd::workload::Workload::open(&args.id, &config)?
-                    .attach(args.interactive)
+                    .attach(!args.no_stdin)
                     .await?,
             ));
         }

@@ -285,6 +285,7 @@ async fn index_export_and_import_preserve_original_bytes() {
             .unwrap();
         assert!(output.status.success());
         let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let value = &value[0];
         assert_eq!(value["digest"], index.to_string());
         assert_eq!(value["manifest_digest"], fixture.manifest.to_string());
     }
@@ -397,6 +398,7 @@ async fn indexed_image_commands_select_the_cached_platform() {
         String::from_utf8_lossy(&output.stderr)
     );
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let value = &value[0];
     assert_eq!(value["digest"], index.to_string());
     assert_eq!(value["manifest_digest"], fixture.manifest.to_string());
     assert_eq!(

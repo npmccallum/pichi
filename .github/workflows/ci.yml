@@ -136,7 +136,7 @@ jobs:
           pichi manifest annotate "$image" "${image}-amd64" --os pichi --arch amd64
           pichi manifest annotate "$image" "${image}-arm64" --os pichi --arch arm64
           for arch in amd64 arm64; do
-            pichi inspect "${image}-$arch" | jq -r '.entries[].digest'
+            pichi inspect "${image}-$arch" | jq -r '.[0].entries[].digest'
           done | sort > "$RUNNER_TEMP/expected-manifests"
           pichi manifest push "$image" "$image" | tee "$RUNNER_TEMP/push-result"
           expected_index=$(sed -n 's/^digest: //p' "$RUNNER_TEMP/push-result")
@@ -145,7 +145,7 @@ jobs:
           for attempt in 1 2 3 4 5 6; do
             if pichi pull "$image" &&
                pichi inspect "$image" > "$RUNNER_TEMP/published.json" &&
-               [ "$(jq -r .digest "$RUNNER_TEMP/published.json")" = "$expected_index" ]; then
+               [ "$(jq -r '.[0].digest' "$RUNNER_TEMP/published.json")" = "$expected_index" ]; then
               break
             fi
             if [ "$attempt" -eq 6 ]; then
@@ -155,8 +155,8 @@ jobs:
             echo "::warning::Published image is not yet readable at the expected digest; retrying ($attempt/6)."
             sleep 10
           done
-          jq -r '.entries[].digest' "$RUNNER_TEMP/published.json" | sort > "$RUNNER_TEMP/actual-manifests"
+          jq -r '.[0].entries[].digest' "$RUNNER_TEMP/published.json" | sort > "$RUNNER_TEMP/actual-manifests"
           diff "$RUNNER_TEMP/expected-manifests" "$RUNNER_TEMP/actual-manifests"
-          digest=$(jq -r .digest "$RUNNER_TEMP/published.json")
+          digest=$(jq -r '.[0].digest' "$RUNNER_TEMP/published.json")
           blob="$XDG_DATA_HOME/pichi/storage/blobs/sha256/${digest#sha256:}"
           test "sha256:$(sha256sum "$blob" | cut -d ' ' -f1)" = "$digest"

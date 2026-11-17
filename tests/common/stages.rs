@@ -67,6 +67,7 @@ impl Builds {
     pub fn image(&self, tag: &str) -> Image {
         let output = self.cli(&["inspect", tag]);
         let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let value = &value[0];
         Image {
             manifest: value["manifest"].clone(),
             cache: self.cache.clone(),

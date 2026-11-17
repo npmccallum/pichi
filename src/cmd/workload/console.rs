@@ -94,7 +94,8 @@ pub(super) struct Console {
 impl Console {
     pub(super) fn open(interactive: bool, tty: bool) -> Result<Self> {
         let sized = tty && io::stdin().is_terminal();
-        let terminal = RawTerminal::open(interactive && sized)?;
+        let raw = interactive && sized;
+        let terminal = RawTerminal::open(raw)?;
         let (sender, input) = mpsc::channel(8);
         if interactive {
             // A dedicated OS thread may block on stdin without preventing the
@@ -103,7 +104,10 @@ impl Console {
             std::thread::Builder::new()
                 .name("pichi-stdin".into())
                 .spawn(move || {
+                    #[cfg(not(windows))]
                     let mut stdin = io::stdin().lock();
+                    #[cfg(windows)]
+                    let mut stdin = super::stdin::Input::new(io::stdin().lock(), raw);
                     loop {
                         let mut bytes = vec![0; 8192];
                         let message = match stdin.read(&mut bytes) {

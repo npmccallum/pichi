@@ -98,11 +98,9 @@ impl Drop for Workload {
 struct Terminal {
     child: Box<dyn portable_pty::Child + Send + Sync>,
     master: Box<dyn MasterPty + Send>,
-    slave: Box<dyn portable_pty::SlavePty + Send>,
     writer: Box<dyn Write + Send>,
     output: mpsc::Receiver<io::Result<Vec<u8>>>,
     received: Vec<u8>,
-    original_mode: PathBuf,
 }
 
 impl Terminal {
@@ -148,8 +146,21 @@ impl Terminal {
             }
         });
         let writer = pair.master.take_writer().unwrap();
-        let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_pichi"));
-        command.args(arguments);
+        let mut command = CommandBuilder::new(std::env::current_exe().unwrap());
+        command.args([
+            "windows_terminal::session",
+            "--exact",
+            "--ignored",
+            "--nocapture",
+        ]);
+        command.env(
+            "PICHI_TEST_TERMINAL_ARGS",
+            serde_json::to_string(arguments).unwrap(),
+        );
+        command.env(
+            "PICHI_TEST_INITIALLY_RAW",
+            if initially_raw { "1" } else { "0" },
+        );
         command.env("XDG_DATA_HOME", workload.root.path());
         command.env(
             "PATH",
@@ -159,33 +170,14 @@ impl Terminal {
             "PICHI_TEST_TERMINAL_FIXTURE",
             std::env::current_exe().unwrap(),
         );
-        let original_mode = workload.root.path().join("original-console-mode");
-        let mut prepare = CommandBuilder::new(std::env::current_exe().unwrap());
-        prepare.args([
-            "windows_terminal::prepare_mode",
-            "--exact",
-            "--ignored",
-            "--nocapture",
-        ]);
-        prepare.env("PICHI_TEST_CONSOLE_MODE", &original_mode);
-        prepare.env(
-            "PICHI_TEST_INITIALLY_RAW",
-            if initially_raw { "1" } else { "0" },
-        );
-        let child = pair.slave.spawn_command(prepare).unwrap();
-        let mut terminal = Self {
+        let child = pair.slave.spawn_command(command).unwrap();
+        Self {
             child,
             master: pair.master,
-            slave: pair.slave,
             writer,
             output,
             received: Vec::new(),
-            original_mode,
-        };
-        terminal.expect("<<<MODE-SAVED>>>");
-        terminal.wait();
-        terminal.child = terminal.slave.spawn_command(command).unwrap();
-        terminal
+        }
     }
 
     fn expect(&mut self, marker: &str) {
@@ -256,17 +248,6 @@ impl Terminal {
     }
 
     fn restored(&mut self) {
-        // Reuse the same console to observe the native input mode left by
-        // Pichi, rather than checking a new console's default mode.
-        let mut command = CommandBuilder::new(std::env::current_exe().unwrap());
-        command.args([
-            "windows_terminal::restored",
-            "--exact",
-            "--ignored",
-            "--nocapture",
-        ]);
-        command.env("PICHI_TEST_CONSOLE_MODE", &self.original_mode);
-        self.child = self.slave.spawn_command(command).unwrap();
         self.expect("<<<TERMINAL-RESTORED>>>");
         self.wait();
     }
@@ -316,33 +297,33 @@ async fn interactive_resize_input_and_reattach() {
 }
 
 #[test]
-#[ignore = "internal console setup: invoked before Pichi in the same terminal"]
-fn prepare_mode() {
+#[ignore = "internal console session: keeps the same console alive around Pichi"]
+fn session() {
+    use std::io::IsTerminal as _;
+    assert!(io::stdin().is_terminal());
     if std::env::var("PICHI_TEST_INITIALLY_RAW").unwrap() == "1" {
         crossterm::terminal::enable_raw_mode().unwrap();
     }
     let console =
         crossterm_winapi::ConsoleMode::from(crossterm_winapi::Handle::input_handle().unwrap());
-    std::fs::write(
-        std::env::var_os("PICHI_TEST_CONSOLE_MODE").unwrap(),
-        console.mode().unwrap().to_string(),
-    )
-    .unwrap();
-    println!("<<<MODE-SAVED>>>");
-}
-
-#[test]
-#[ignore = "internal console mode probe: invoked in the same terminal after Pichi exits"]
-fn restored() {
-    use std::io::IsTerminal as _;
-    assert!(io::stdin().is_terminal());
-    let original: u32 =
-        std::fs::read_to_string(std::env::var_os("PICHI_TEST_CONSOLE_MODE").unwrap())
-            .unwrap()
-            .parse()
-            .unwrap();
-    let console =
-        crossterm_winapi::ConsoleMode::from(crossterm_winapi::Handle::input_handle().unwrap());
+    let original = console.mode().unwrap();
+    let arguments: Vec<String> =
+        serde_json::from_str(&std::env::var("PICHI_TEST_TERMINAL_ARGS").unwrap()).unwrap();
+    // Keep this process attached: separate setup/probe processes can leave
+    // the console empty between launches and observe its reset default mode.
+    let mut child = Command::new(env!("CARGO_BIN_EXE_pichi"))
+        .args(arguments)
+        .spawn()
+        .unwrap();
+    let status = child.wait_timeout(Duration::from_secs(30)).unwrap();
+    if status.is_none() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    assert!(
+        status.is_some_and(|status| status.success()),
+        "Pichi session: {status:?}"
+    );
     assert_eq!(console.mode().unwrap(), original);
     println!("<<<TERMINAL-RESTORED>>>");
 }

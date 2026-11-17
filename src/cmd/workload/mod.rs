@@ -10,6 +10,8 @@ mod console;
 mod logs;
 pub(crate) mod record;
 mod resize;
+#[cfg(any(windows, test))]
+mod stdin;
 #[cfg(windows)]
 #[allow(
     unsafe_code,

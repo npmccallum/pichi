@@ -225,6 +225,12 @@ impl Terminal {
     }
 
     fn input(&mut self) {
+        // A lone Ctrl-Z must reach the guest immediately, rather than end
+        // the standard console reader before the following input arrives.
+        self.writer.write_all(&[0x1a]).unwrap();
+        self.expect("<<<CTRL-Z>>>");
+        self.writer.write_all("é🦔!".as_bytes()).unwrap();
+        self.expect("<<<INPUT:c3a9f09fa69421>>>");
         self.writer.write_all(b"input-\x03\x04!").unwrap();
         self.expect("<<<INPUT:696e7075742d030421>>>");
     }
@@ -367,6 +373,11 @@ fn workload() {
             break;
         }
         for &byte in &bytes[..count] {
+            if byte == 0x1a {
+                println!("<<<CTRL-Z>>>");
+                io::stdout().flush().unwrap();
+                continue;
+            }
             input.push(byte);
             assert!(input.len() < 4096);
             if byte == b'!' {

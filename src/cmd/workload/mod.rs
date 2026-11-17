@@ -270,6 +270,96 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn attach_reports_exit_only_after_monitor_acceptance() -> Result<()> {
+        use futures_util::{SinkExt, StreamExt};
+        use interprocess::local_socket::{GenericFilePath, ListenerOptions, tokio::prelude::*};
+        use tokio_util::codec::{Framed, LengthDelimitedCodec};
+
+        let root = tempfile::tempdir()?;
+        let graphroot = root.path().join("cache");
+        std::fs::create_dir(&graphroot)?;
+        let records = record::Records::open(&graphroot)?;
+        for accepted in [false, true] {
+            let id = uuid::Uuid::new_v4();
+            #[cfg(unix)]
+            let endpoint = root.path().join(format!("{id}.sock"));
+            #[cfg(windows)]
+            let endpoint = PathBuf::from(format!(r"\\.\pipe\pichi-attach-{id}"));
+            let listener = ListenerOptions::new()
+                .name(endpoint.as_path().to_fs_name::<GenericFilePath>()?)
+                .create_tokio()?;
+            let image = format!("sha256:{}", "0".repeat(64)).parse()?;
+            let workload = Workload(records.create(vec![image], endpoint, id)?);
+            let state = workload.0.run.state();
+            std::fs::create_dir(&state)?;
+            let completion = Completion {
+                version: madrillo::PROTOCOL_VERSION,
+                leader: LeaderResult::Exit { code: 23 },
+                cause: madrillo::CompletionCause::LeaderExit,
+                exited_at_unix_ms: 0,
+                cleanup: madrillo::CleanupResult::Complete,
+                oom: madrillo::OomEvidence::NoneObserved,
+                log_errors: Vec::new(),
+                monitor_errors: Vec::new(),
+                monitor_warnings: Vec::new(),
+                output_truncated: false,
+            };
+            let serving = async {
+                let mut server = Framed::new(listener.accept().await?, LengthDelimitedCodec::new());
+                let request: madrillo::Request = serde_json::from_slice(
+                    &server.next().await.context("missing attach request")??,
+                )?;
+                assert!(matches!(
+                    request.message,
+                    ClientMessage::Attach { input: false, .. }
+                ));
+                // The client already checked for a retained result. Complete
+                // now, and either accept attachment or report completion first.
+                std::fs::write(state.join("result.json"), serde_json::to_vec(&completion)?)?;
+                let message = if accepted {
+                    ServerMessage::Attached { input: false }
+                } else {
+                    ServerMessage::Completed {
+                        result: completion.clone(),
+                    }
+                };
+                server
+                    .send(
+                        serde_json::to_vec(&madrillo::Response {
+                            version: madrillo::PROTOCOL_VERSION,
+                            message,
+                        })?
+                        .into(),
+                    )
+                    .await?;
+                #[cfg(windows)]
+                {
+                    let interprocess::local_socket::tokio::Stream::NamedPipe(pipe) =
+                        server.get_ref();
+                    pipe.inner().assume_flushed();
+                }
+                Ok::<_, anyhow::Error>(())
+            };
+            let (served, result) = tokio::time::timeout(Duration::from_secs(5), async {
+                tokio::join!(serving, workload.attach(false))
+            })
+            .await?;
+            served?;
+            if accepted {
+                assert_eq!(result?, 23);
+            } else {
+                assert!(
+                    result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("can only attach to running workloads")
+                );
+            }
+        }
+        Ok(())
+    }
+
     #[cfg(windows)]
     #[tokio::test]
     #[ignore = "requires MADRILLO_BIN and a containing Job that forbids breakaway"]
@@ -1198,15 +1288,17 @@ impl Workload {
 
     pub async fn attach(self, interactive: bool) -> Result<u32> {
         self.0.release_runtime_files()?;
-        if let Some(result) = self.0.run.completion()? {
-            return Outcome(result).code();
-        }
+        anyhow::ensure!(
+            self.0.run.completion()?.is_none(),
+            "can only attach to running workloads"
+        );
         let (path, endpoint, resize) = (
             self.0.run.path().to_owned(),
             self.0.run.endpoint().to_owned(),
             self.0.run.resize_endpoint(),
         );
         drop(self);
+        let mut attached = false;
         let result = async {
             let mut client = Client::connect(&endpoint).await?;
             client
@@ -1217,7 +1309,10 @@ impl Workload {
                 .await?;
             loop {
                 match client.next().await? {
-                    ServerMessage::Attached { input } if input == interactive => break,
+                    ServerMessage::Attached { input } if input == interactive => {
+                        attached = true;
+                        break;
+                    }
                     ServerMessage::Started { .. } => {}
                     response => bail!("attachment rejected: {response:?}"),
                 }
@@ -1230,7 +1325,8 @@ impl Workload {
         match result {
             Ok(code) => Ok(code),
             Err(error) => match Record::at(&path)?.run.completion()? {
-                Some(result) => Outcome(result).code(),
+                Some(result) if attached => Outcome(result).code(),
+                Some(_) => bail!("can only attach to running workloads"),
                 None => Err(error).context("workload state is unknown; image pins remain retained"),
             },
         }

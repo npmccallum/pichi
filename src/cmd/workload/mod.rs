@@ -910,6 +910,10 @@ impl Workload {
         Ok(Self(records.resolve(id)?))
     }
 
+    pub fn id(&self) -> uuid::Uuid {
+        self.0.id()
+    }
+
     pub async fn logs(&self) -> Result<()> {
         let snapshot = logs::Snapshot::try_from(self.0.console_log()?)?;
         tokio::task::spawn_blocking(move || {

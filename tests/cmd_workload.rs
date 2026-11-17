@@ -361,10 +361,10 @@ async fn detached_launch_is_discoverable_and_later_wait_reads_retained_exit() {
     let prefix = &id[..8];
     fixture
         .command()
-        .args(["wait", id])
+        .args(["wait", id, prefix])
         .assert()
         .success()
-        .stdout("23\n");
+        .stdout("23\n23\n");
     // A later caller uses the retained address even with a different TMPDIR.
     // Launch must respect the configured native temp directory, which may be
     // the only location writable inside the caller's filesystem sandbox.

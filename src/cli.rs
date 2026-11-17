@@ -400,6 +400,14 @@ pub struct WorkloadArgs {
     pub id: String,
 }
 
+/// Wait for one or more workloads.
+#[derive(Debug, ClapArgs)]
+pub struct WaitArgs {
+    /// Full workload UUIDs or unambiguous prefixes, in output order.
+    #[arg(required = true)]
+    pub ids: Vec<String>,
+}
+
 /// Stop a workload through its console shutdown contract.
 #[derive(Debug, ClapArgs)]
 pub struct StopArgs {

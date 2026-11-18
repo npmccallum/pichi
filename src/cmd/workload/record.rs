@@ -3,6 +3,7 @@
 
 //! Retained caller identity. Missing monitor results remain unknown and pinned.
 
+use super::instance::Instance;
 use anyhow::{Context, Result, bail};
 use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
 use cap_std::fs::{Dir, OpenOptions};
@@ -24,6 +25,11 @@ struct Identity {
     endpoint: PathBuf,
 }
 
+#[derive(Deserialize)]
+struct Version {
+    version: u16,
+}
+
 #[derive(Debug)]
 pub(crate) struct Records {
     path: PathBuf,
@@ -34,6 +40,30 @@ pub(crate) struct Records {
 pub(crate) struct Record {
     identity: Identity,
     pub(crate) run: Run,
+}
+
+/// Retained temporary workloads and durable, never-started instances.
+#[derive(Debug)]
+pub(super) enum Entry {
+    Legacy(Record),
+
+    Instance(Instance),
+}
+
+impl Entry {
+    pub(super) fn id(&self) -> Uuid {
+        match self {
+            Self::Legacy(record) => record.id(),
+            Self::Instance(instance) => instance.id(),
+        }
+    }
+
+    pub(super) fn legacy(self) -> Result<Record> {
+        match self {
+            Self::Legacy(record) => Ok(record),
+            Self::Instance(_) => bail!("instance has not been started"),
+        }
+    }
 }
 
 /// One boot's monitor state, diagnostics and control endpoint.
@@ -52,7 +82,10 @@ impl Records {
         let Some(records) = Self::existing(graphroot)? else {
             return Ok(false);
         };
-        for record in records.list()? {
+        for entry in records.list()? {
+            let Entry::Legacy(record) = entry else {
+                continue;
+            };
             match record.run.directory.open_dir_nofollow("output") {
                 Ok(_) => {
                     if !matches!(record.run.completion()?, Some(result) if result.cleanup == CleanupResult::Complete)
@@ -82,6 +115,10 @@ impl Records {
             Err(error) => return Err(error.into()),
         }
         Self::from_parent(path, &parent)?.context("missing workload directory")
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
     }
 
     fn private_builder() -> cap_std::fs::DirBuilder {
@@ -296,10 +333,18 @@ impl Records {
     }
 
     pub(super) fn get(&self, id: Uuid) -> Result<Record> {
+        self.get_entry(id)?.legacy()
+    }
+
+    pub(super) fn get_entry(&self, id: Uuid) -> Result<Entry> {
         let name = id.to_string();
         let directory = self.directory.open_dir_nofollow(&name)?;
-        let identity: Identity = Run::read(&directory, "identity.json", 1024 * 1024)?
+        let bytes = Run::read_bytes(&directory, "identity.json", 1024 * 1024)?
             .context("missing workload identity")?;
+        if serde_json::from_slice::<Version>(&bytes)?.version == 2 {
+            return Instance::read(&bytes, id).map(Entry::Instance);
+        }
+        let identity: Identity = serde_json::from_slice(&bytes)?;
         if identity.version != 1
             || identity.id != id
             || identity.images.is_empty()
@@ -307,20 +352,20 @@ impl Records {
         {
             bail!("invalid workload identity");
         }
-        Ok(Record {
+        Ok(Entry::Legacy(Record {
             run: Run {
                 path: self.path.join(name),
                 directory,
                 endpoint: identity.endpoint.clone(),
             },
             identity,
-        })
+        }))
     }
 
     /// Resolve a full UUID or a unique prefix before any workload operation.
-    pub(super) fn resolve(&self, selector: &str) -> Result<Record> {
+    pub(super) fn resolve(&self, selector: &str) -> Result<Entry> {
         if let Ok(id) = selector.parse::<Uuid>() {
-            return self.get(id);
+            return self.get_entry(id);
         }
         let prefix = selector.replace('-', "").to_ascii_lowercase();
         let mut matches = self.list()?.into_iter().filter(|record| {
@@ -333,7 +378,7 @@ impl Records {
         }
     }
 
-    pub(super) fn list(&self) -> Result<Vec<Record>> {
+    pub(super) fn list(&self) -> Result<Vec<Entry>> {
         let mut records = Vec::new();
         for entry in self.directory.entries()? {
             let entry = entry?;
@@ -346,18 +391,23 @@ impl Records {
             if !entry.file_type()?.is_dir() {
                 bail!("workload identity must be a directory");
             }
-            records.push(self.get(id)?);
+            records.push(self.get_entry(id)?);
         }
-        records.sort_by_key(Record::id);
+        records.sort_by_key(Entry::id);
         Ok(records)
     }
 
     pub(super) fn pins(&self) -> Result<Vec<Digest>> {
         let mut pins = Vec::new();
-        for record in self.list()? {
-            if !matches!(record.run.completion()?, Some(result) if result.cleanup == CleanupResult::Complete)
-            {
-                pins.extend(record.identity.images);
+        for entry in self.list()? {
+            match entry {
+                Entry::Instance(instance) => pins.extend(instance.images()),
+                Entry::Legacy(record) => {
+                    if !matches!(record.run.completion()?, Some(result) if result.cleanup == CleanupResult::Complete)
+                    {
+                        pins.extend(record.identity.images);
+                    }
+                }
             }
         }
         Ok(pins)
@@ -522,6 +572,12 @@ impl Run {
         name: &str,
         limit: u64,
     ) -> Result<Option<T>> {
+        Self::read_bytes(directory, name, limit)?
+            .map(|bytes| serde_json::from_slice(&bytes).map_err(Into::into))
+            .transpose()
+    }
+
+    fn read_bytes(directory: &Dir, name: &str, limit: u64) -> Result<Option<Vec<u8>>> {
         let Some(file) = Self::open_file(directory, name)? else {
             return Ok(None);
         };
@@ -530,7 +586,7 @@ impl Run {
         if u64::try_from(bytes.len())? > limit {
             bail!("workload record exceeds size limit");
         }
-        Ok(Some(serde_json::from_slice(&bytes)?))
+        Ok(Some(bytes))
     }
 
     fn open_file(directory: &Dir, name: &str) -> Result<Option<cap_std::fs::File>> {

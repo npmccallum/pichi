@@ -31,7 +31,16 @@ struct Workload {
 impl Workload {
     async fn new() -> Self {
         let root = tempfile::tempdir().unwrap();
-        populate_bootable(&graphroot(&root), "terminal:1").await;
+        let graphroot = graphroot(&root);
+        populate_bootable(&graphroot, "terminal:1").await;
+        std::fs::write(
+            root.path().join("pichi/config.toml"),
+            format!(
+                "[storage]\ngraphroot = {}\n",
+                serde_json::to_string(&graphroot).unwrap()
+            ),
+        )
+        .unwrap();
         let stub = make_stub_dillo(root.path());
         Self { root, stub }
     }
@@ -40,6 +49,7 @@ impl Workload {
         let mut command = Command::new(env!("CARGO_BIN_EXE_pichi"));
         command
             .env("XDG_DATA_HOME", self.root.path())
+            .env("APPDATA", self.root.path())
             .env(
                 "PATH",
                 super::executable_path::prepend(self.stub.parent().unwrap()),
@@ -162,6 +172,7 @@ impl Terminal {
             if initially_raw { "1" } else { "0" },
         );
         command.env("XDG_DATA_HOME", workload.root.path());
+        command.env("APPDATA", workload.root.path());
         command.env(
             "PATH",
             super::executable_path::prepend(workload.stub.parent().unwrap()),

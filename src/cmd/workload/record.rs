@@ -292,10 +292,10 @@ impl Records {
             let entry = entry?;
             let name = entry.file_name();
             let Some(name) = name.to_str() else { continue };
-            if !name
-                .strip_prefix(".creating-")
-                .is_some_and(|id| id.parse::<Uuid>().is_ok())
-            {
+            if !name.strip_prefix(".creating-").is_some_and(|id| {
+                id.parse::<Uuid>()
+                    .is_ok_and(|parsed| parsed.to_string() == id)
+            }) {
                 continue;
             }
             let removed: Result<()> = (|| {
@@ -306,8 +306,15 @@ impl Records {
                         bail!("unexpected file in unpublished workload");
                     }
                 }
+                // Only unlink the recognized artifact through this handle.
+                // A late unfamiliar child must make the final rmdir fail.
+                match directory.remove_file("identity.json") {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.into()),
+                }
                 drop(directory);
-                self.directory.remove_dir_all(name)?;
+                self.directory.remove_dir(name)?;
                 Ok(())
             })();
             if let Err(error) = removed {
@@ -788,6 +795,11 @@ mod tests {
         let unnamed = records.path.join(".creating-not-a-workload");
         std::fs::create_dir(&unnamed)?;
         std::fs::write(unnamed.join("identity.json"), b"keep unrelated directory")?;
+        let noncanonical = records
+            .path
+            .join(format!(".creating-{}", Uuid::new_v4().simple()));
+        std::fs::create_dir(&noncanonical)?;
+        std::fs::write(noncanonical.join("identity.json"), b"not a producer name")?;
         let next = records.reserve(vec![Digest::Sha256([2; 32])])?;
         assert!(
             next.run.path().is_dir(),
@@ -806,6 +818,10 @@ mod tests {
         assert_eq!(
             std::fs::read(unnamed.join("identity.json"))?,
             b"keep unrelated directory"
+        );
+        assert_eq!(
+            std::fs::read(noncanonical.join("identity.json"))?,
+            b"not a producer name"
         );
         Ok(())
     }

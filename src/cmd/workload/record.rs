@@ -863,6 +863,11 @@ mod tests {
 
     #[test]
     fn removal_requires_released_publication_ownership() -> Result<()> {
+        if crate::test_support::isolated(
+            "cmd::workload::record::tests::removal_requires_released_publication_ownership",
+        ) {
+            return Ok(());
+        }
         let root = tempfile::tempdir()?;
         let graphroot = root.path().join("cache");
         std::fs::create_dir(&graphroot)?;
@@ -1398,6 +1403,11 @@ mod tests {
 
     #[tokio::test]
     async fn legacy_removal_requires_complete_cleanup_and_released_host_ownership() -> Result<()> {
+        if crate::test_support::isolated(
+            "cmd::workload::record::tests::legacy_removal_requires_complete_cleanup_and_released_host_ownership",
+        ) {
+            return Ok(());
+        }
         use std::time::Duration;
 
         // Pause the real blocking snapshot after it has taken ownership.
@@ -1508,6 +1518,11 @@ mod tests {
 
     #[test]
     fn legacy_removal_preserves_old_build_output_and_unexpected_files() -> Result<()> {
+        if crate::test_support::isolated(
+            "cmd::workload::record::tests::legacy_removal_preserves_old_build_output_and_unexpected_files",
+        ) {
+            return Ok(());
+        }
         let root = tempfile::tempdir()?;
         let cache = root.path().join("cache");
         std::fs::create_dir(&cache)?;

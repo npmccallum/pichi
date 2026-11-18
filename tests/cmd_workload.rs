@@ -34,6 +34,14 @@ impl WorkloadFixture {
         let graphroot = root.path().join("pichi/storage");
         let tags = FilesystemTagDb::open(&graphroot).unwrap();
         let blobs = FilesystemBlobStore::new(&graphroot);
+        std::fs::write(
+            root.path().join("pichi/config.toml"),
+            format!(
+                "[storage]\ngraphroot = {}\n",
+                serde_json::to_string(&graphroot).unwrap()
+            ),
+        )
+        .unwrap();
         let pmi = b"PMI\0";
         let digest = Digest::Sha256(Sha256::digest(pmi).into());
         blobs.put_blob(&digest, pmi).await.unwrap();
@@ -156,10 +164,13 @@ impl WorkloadFixture {
 
     fn native_command(&self) -> std::process::Command {
         let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_pichi"));
-        command.env("XDG_DATA_HOME", self.root.path()).env(
-            "PATH",
-            executable_path::prepend(self.program.parent().unwrap()),
-        );
+        command
+            .env("XDG_DATA_HOME", self.root.path())
+            .env("XDG_CONFIG_HOME", self.root.path())
+            .env(
+                "PATH",
+                executable_path::prepend(self.program.parent().unwrap()),
+            );
         command
     }
 }

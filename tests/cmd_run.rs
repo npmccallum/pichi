@@ -912,6 +912,14 @@ async fn creation_cleanup_waits_for_the_current_image_index_owner() {
     let root = TempDir::new().unwrap();
     let graphroot = graphroot(&root);
     populate_bootable(&graphroot, "cleanup:locked").await;
+    std::fs::write(
+        root.path().join("pichi/config.toml"),
+        format!(
+            "[storage]\ngraphroot = {}\n",
+            serde_json::to_string(&graphroot).unwrap()
+        ),
+    )
+    .unwrap();
     let records = root.path().join("pichi/storage.workloads");
     std::fs::create_dir(&records).unwrap();
     #[cfg(unix)]
@@ -931,6 +939,8 @@ async fn creation_cleanup_waits_for_the_current_image_index_owner() {
     std::fs::write(&identity, b"creation in progress").unwrap();
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_pichi"))
         .env("XDG_DATA_HOME", root.path())
+        .env("XDG_CONFIG_HOME", root.path())
+        .env("APPDATA", root.path())
         .env("PATH", "")
         .args(["run", "--storage", "2m", "cleanup:locked"])
         .stdout(Stdio::null())

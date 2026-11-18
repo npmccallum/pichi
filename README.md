@@ -222,6 +222,12 @@ pending, forced stop waits for startup and retries termination within its
 existing 30-second deadline. Confirmed cancellation with complete cleanup also
 counts as stopped, but has no native exit status for `pichi wait ID` to print.
 Otherwise the original workload exit status remains available through `wait`.
+Stopping a pending launch requires a Madrillo executable built from
+[348cf6e](https://github.com/pichi-vm/madrillo/commit/348cf6e24d5be000333763264f10bfc98991514f)
+or a newer compatible revision, with prelaunch input closure and ordered
+termination handling. Protocol version 1 alone does not guarantee this behavior.
+Pichi's locked Rust dependency does not update the executable on PATH; update
+that executable separately before launching workloads that need this behavior.
 Missing results remain unknown and retain image pins. `rmi` may remove a tag
 without deleting images still needed by such workloads.
 

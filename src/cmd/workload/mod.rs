@@ -964,19 +964,15 @@ mod tests {
         ] {
             // Graceful and forced stop survive Prepared -> Started or
             // confirmed cancellation without selecting a different boot.
-            let id = uuid::Uuid::new_v4();
-            #[cfg(unix)]
-            let endpoint = std::env::temp_dir().join(id.simple().to_string());
-            #[cfg(windows)]
-            let endpoint = PathBuf::from(format!(r"\\.\pipe\pichi-{id}"));
-            let record = records.create(record.images().to_vec(), endpoint.clone(), id)?;
+            let record = records.reserve(record.images().to_vec())?;
+            let endpoint = record.run.endpoint();
             let mut running = ReapMonitor(
                 Launch {
                     monitor: &monitor,
                     program: &fixture,
                     arguments: &[if grace.is_zero() { "sleep" } else { "echo" }.into()],
                     state: &record.run.state(),
-                    endpoint: &endpoint,
+                    endpoint,
                     input: false,
                     inherited: Vec::new(),
                     held: Vec::new(),
@@ -1004,7 +1000,7 @@ mod tests {
                     ServerMessage::Started { .. }
                 ));
             } else {
-                let observer = Client::connect(&endpoint).await?;
+                let observer = Client::connect(endpoint).await?;
                 drop(std::mem::replace(&mut running.client, observer));
             }
             let result = tokio::time::timeout(Duration::from_secs(5), stopping).await??;

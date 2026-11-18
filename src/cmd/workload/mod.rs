@@ -1491,6 +1491,8 @@ impl Workload {
         quiet: bool,
         json: bool,
     ) -> Result<()> {
+        use std::io::Write as _;
+
         #[derive(serde::Serialize)]
         #[serde(rename_all = "PascalCase")]
         struct Row {
@@ -1503,7 +1505,7 @@ impl Workload {
         let layout = config.resolve_layout()?;
         let Some(records) = record::Records::existing(&layout.graphroot)? else {
             if json {
-                println!("[]");
+                writeln!(std::io::stdout().lock(), "[]")?;
             }
             return Ok(());
         };
@@ -1564,7 +1566,11 @@ impl Workload {
             }
         }
         if json {
-            println!("{}", serde_json::to_string_pretty(&rows)?);
+            writeln!(
+                std::io::stdout().lock(),
+                "{}",
+                serde_json::to_string_pretty(&rows)?
+            )?;
         }
         Ok(())
     }

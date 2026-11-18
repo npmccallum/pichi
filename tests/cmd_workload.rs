@@ -913,8 +913,20 @@ async fn blocked_console_input_observes_stop_and_caller_signals() {
 #[tokio::test]
 async fn workload_json_uses_current_state_and_all_filtering() {
     let fixture = WorkloadFixture::new("import os, signal\nsignal.alarm(30)\nos.read(0, 1)").await;
-    let output = fixture
-        .command()
+    std::fs::write(
+        fixture.root.path().join("pichi/config.toml"),
+        format!(
+            "[storage]\ngraphroot = {}\n",
+            serde_json::to_string(&fixture.root.path().join("pichi/storage")).unwrap()
+        ),
+    )
+    .unwrap();
+    let command = || {
+        let mut command = fixture.command();
+        command.env("XDG_CONFIG_HOME", fixture.root.path());
+        command
+    };
+    let output = command()
         .args(["run", "-d", "fixture:1"])
         .assert()
         .success()
@@ -923,8 +935,7 @@ async fn workload_json_uses_current_state_and_all_filtering() {
         .clone();
     let id = String::from_utf8(output).unwrap();
     let id = id.trim();
-    let listed = fixture
-        .command()
+    let listed = command()
         .args(["ps", "--format", "json"])
         .assert()
         .success()
@@ -938,15 +949,13 @@ async fn workload_json_uses_current_state_and_all_filtering() {
         rows,
         serde_json::json!([{"ID": id, "Images": [image], "State": "running"}])
     );
-    fixture.command().args(["stop", id]).assert().success();
-    fixture
-        .command()
+    command().args(["stop", id]).assert().success();
+    command()
         .args(["ps", "--format", "json"])
         .assert()
         .success()
         .stdout("[]\n");
-    let listed = fixture
-        .command()
+    let listed = command()
         .args(["ps", "-a", "--format", "json"])
         .assert()
         .success()
@@ -958,8 +967,7 @@ async fn workload_json_uses_current_state_and_all_filtering() {
     assert_eq!(rows[0]["ID"], id);
     let result = fixture.record().join("monitor/result.json");
     std::fs::remove_file(&result).unwrap();
-    let listed = fixture
-        .command()
+    let listed = command()
         .args(["ps", "--format", "json"])
         .assert()
         .success()
@@ -969,8 +977,7 @@ async fn workload_json_uses_current_state_and_all_filtering() {
     let rows: serde_json::Value = serde_json::from_slice(&listed).unwrap();
     assert_eq!(rows[0]["State"], "unknown");
     std::fs::write(result, b"corrupt result").unwrap();
-    fixture
-        .command()
+    command()
         .args(["ps", "--format", "json"])
         .assert()
         .code(125)

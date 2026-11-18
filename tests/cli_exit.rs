@@ -59,6 +59,15 @@ fn configuration_errors_exit_125_but_help_and_version_succeed() {
 #[test]
 fn empty_workload_json_is_an_array() {
     let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join("pichi")).unwrap();
+    std::fs::write(
+        root.path().join("pichi/config.toml"),
+        format!(
+            "[storage]\ngraphroot = {}\n",
+            serde_json::to_string(&root.path().join("cache")).unwrap()
+        ),
+    )
+    .unwrap();
     Command::cargo_bin("pichi")
         .unwrap()
         .env("XDG_DATA_HOME", root.path())

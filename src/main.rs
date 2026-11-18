@@ -222,7 +222,7 @@ async fn run(cli: Cli) -> anyhow::Result<NativeExit> {
                     cmd::workload::Workload::open(&id.to_string(), &config)?
                         .stop(grace)
                         .await?
-                        .code()
+                        .confirm_stopped()
                 }
                 .await;
                 match result {

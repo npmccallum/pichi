@@ -217,8 +217,11 @@ and the command exits with status 125.
 while other clients forward input. After 10 seconds it asks madrillo to force
 workload cleanup; `--time SECONDS` changes that grace period and `--time 0`
 forces immediately. It prints the ID after confirmed exit. Stopping an exited
-workload succeeds using its retained result. The original workload exit status
-remains available through `pichi wait ID`.
+workload succeeds using its retained result. If launch authorization is still
+pending, forced stop waits for startup and retries termination within its
+existing 30-second deadline. Confirmed cancellation with complete cleanup also
+counts as stopped, but has no native exit status for `pichi wait ID` to print.
+Otherwise the original workload exit status remains available through `wait`.
 Missing results remain unknown and retain image pins. `rmi` may remove a tag
 without deleting images still needed by such workloads.
 

@@ -75,6 +75,16 @@ impl Records {
         )?;
         #[cfg(windows)]
         Self::private_directory(&parent)?;
+        let options = Self::private_builder();
+        match parent.create_dir_with(path.file_name().context("workload state name")?, &options) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error.into()),
+        }
+        Self::from_parent(path, &parent)?.context("missing workload directory")
+    }
+
+    fn private_builder() -> cap_std::fs::DirBuilder {
         let options = cap_std::fs::DirBuilder::new();
         #[cfg(unix)]
         let options = {
@@ -83,12 +93,7 @@ impl Records {
             options.mode(0o700);
             options
         };
-        match parent.create_dir_with(path.file_name().context("workload state name")?, &options) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(error.into()),
-        }
-        Self::from_parent(path, &parent)?.context("missing workload directory")
+        options
     }
 
     pub(super) fn existing(graphroot: &Path) -> Result<Option<Self>> {
@@ -222,39 +227,50 @@ impl Records {
         if images.is_empty() || images.len() > 1024 {
             bail!("a workload must pin between 1 and 1024 images");
         }
-        let name = id.to_string();
-        // The image-index lock excludes other creators. Preserve an existing
-        // entry even if it is empty, which rename could otherwise replace.
-        match self.directory.symlink_metadata(&name) {
-            Ok(_) => return Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists).into()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
-        let options = cap_std::fs::DirBuilder::new();
-        #[cfg(unix)]
-        let options = {
-            use cap_std::fs::DirBuilderExt;
-            let mut options = options;
-            options.mode(0o700);
-            options
-        };
         let identity = Identity {
             version: 1,
             id,
             images,
             endpoint,
         };
-        // Observers do not hold the image-index lock. Publish only a complete
-        // identity; an interrupted creation must never look like a workload.
+        self.publish(id, &identity, |_| Ok(()))?;
+        let name = id.to_string();
+        let directory = self.directory.open_dir_nofollow(&name)?;
+        Ok(Record {
+            run: Run {
+                path: self.path.join(name),
+                directory,
+                endpoint: identity.endpoint.clone(),
+            },
+            identity,
+        })
+    }
+
+    /// Caller holds the image-index lock through payload preparation and publication.
+    pub(super) fn publish(
+        &self,
+        id: Uuid,
+        identity: &impl Serialize,
+        prepare: impl FnOnce(&Dir) -> Result<()>,
+    ) -> Result<()> {
+        let name = id.to_string();
+        // Preserve existing entries, including empty directories.
+        match self.directory.symlink_metadata(&name) {
+            Ok(_) => return Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists).into()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
         let staging = format!(".creating-{id}");
-        self.directory.create_dir_with(&staging, &options)?;
+        self.directory
+            .create_dir_with(&staging, &Self::private_builder())?;
         let published: Result<()> = (|| {
             let directory = self.directory.open_dir_nofollow(&staging)?;
+            prepare(&directory)?;
             let mut file = directory.open_with(
                 "identity.json",
                 OpenOptions::new().write(true).create_new(true),
             )?;
-            serde_json::to_writer(&mut file, &identity)?;
+            serde_json::to_writer(&mut file, identity)?;
             file.write_all(b"\n")?;
             file.sync_all()?;
             #[cfg(unix)]
@@ -270,17 +286,13 @@ impl Records {
             }
             return Err(error);
         }
+        // Publication succeeded; preserve the ID in any later error.
         #[cfg(unix)]
-        self.directory.open(".")?.sync_all()?;
-        let directory = self.directory.open_dir_nofollow(&name)?;
-        Ok(Record {
-            run: Run {
-                path: self.path.join(name),
-                directory,
-                endpoint: identity.endpoint.clone(),
-            },
-            identity,
-        })
+        self.directory
+            .open(".")
+            .and_then(|directory| directory.sync_all())
+            .with_context(|| format!("workload {id} was published but could not be synced"))?;
+        Ok(())
     }
 
     pub(super) fn get(&self, id: Uuid) -> Result<Record> {
@@ -660,6 +672,18 @@ mod tests {
         let cache = root.path().join("cache");
         std::fs::create_dir(&cache)?;
         let records = Records::open(&cache)?;
+        assert!(
+            records
+                .publish(Uuid::new_v4(), &(), |directory| {
+                    directory.open_with(
+                        "partial-disk",
+                        OpenOptions::new().write(true).create_new(true),
+                    )?;
+                    bail!("payload preparation failed")
+                })
+                .is_err()
+        );
+        assert_eq!(records.directory.entries()?.count(), 0);
         #[cfg(unix)]
         let endpoint = {
             use std::os::unix::ffi::OsStringExt;

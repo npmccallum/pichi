@@ -974,6 +974,81 @@ mod tests {
             );
         }
 
+        for (authorize, grace) in [
+            (false, Duration::ZERO),
+            (true, Duration::ZERO),
+            (false, Duration::from_secs(2)),
+            (true, Duration::from_secs(2)),
+        ] {
+            // Graceful and forced stop survive Prepared -> Started or
+            // confirmed cancellation without selecting a different boot.
+            let id = uuid::Uuid::new_v4();
+            #[cfg(unix)]
+            let endpoint = std::env::temp_dir().join(id.simple().to_string());
+            #[cfg(windows)]
+            let endpoint = PathBuf::from(format!(r"\\.\pipe\pichi-{id}"));
+            let record = records.create(record.images().to_vec(), endpoint.clone(), id)?;
+            let mut running = ReapMonitor(
+                Launch {
+                    monitor: &monitor,
+                    program: &fixture,
+                    arguments: &[if grace.is_zero() { "sleep" } else { "echo" }.into()],
+                    state: &record.run.state(),
+                    endpoint: &endpoint,
+                    input: false,
+                    inherited: Vec::new(),
+                    held: Vec::new(),
+                    cleanup: None,
+                }
+                .spawn()
+                .await?,
+            );
+            assert!(matches!(
+                running.client.next().await?,
+                ServerMessage::Prepared { monitor_pid } if monitor_pid == running.monitor.id()
+            ));
+            let stopping = Workload(records.get(record.id())?).stop(grace);
+            tokio::pin!(stopping);
+            assert!(
+                tokio::time::timeout(Duration::from_millis(100), &mut stopping)
+                    .await
+                    .is_err(),
+                "stop returned while launch was still pending"
+            );
+            if authorize {
+                running.client.send(ClientMessage::Start).await?;
+                assert!(matches!(
+                    running.client.next().await?,
+                    ServerMessage::Started { .. }
+                ));
+            } else {
+                let observer = Client::connect(&endpoint).await?;
+                drop(std::mem::replace(&mut running.client, observer));
+            }
+            let result = tokio::time::timeout(Duration::from_secs(5), stopping).await??;
+            if authorize {
+                let code = result.code()?;
+                assert_eq!(code == 0, !grace.is_zero());
+            } else {
+                assert_eq!(result.0.cause, madrillo::CompletionCause::LaunchCancelled);
+                assert_eq!(result.0.leader, LeaderResult::Unknown);
+                result.confirm_stopped()?;
+                Workload(records.get(record.id())?)
+                    .stop(Duration::ZERO)
+                    .await?
+                    .confirm_stopped()?;
+                assert!(
+                    Workload(records.get(record.id())?)
+                        .wait()
+                        .await?
+                        .code()
+                        .is_err(),
+                    "wait must not invent an exit status for a cancelled launch"
+                );
+            }
+            assert!(running.monitor.wait()?.success());
+        }
+
         // A prepared monitor must wait for authorization. Observers can
         // attach before then and receive Started before completion.
         let gated = tempfile::tempdir()?;
@@ -1163,7 +1238,23 @@ impl Client {
     async fn terminate(&mut self) -> Result<Completion> {
         tokio::time::timeout(Duration::from_secs(30), async {
             self.send(ClientMessage::Terminate).await?;
-            self.wait(false).await
+            let mut pending_start = false;
+            loop {
+                match self.next().await? {
+                    ServerMessage::Error {
+                        code: madrillo::ErrorCode::NotRunning,
+                        ..
+                    } => pending_start = true,
+                    ServerMessage::Started { .. } if pending_start => {
+                        self.send(ClientMessage::Terminate).await?;
+                        pending_start = false;
+                    }
+                    ServerMessage::Started { .. } | ServerMessage::Output { .. } => {}
+                    ServerMessage::Completed { result } => return Ok(result),
+                    ServerMessage::Error { code, message } => bail!("monitor {code:?}: {message}"),
+                    response => bail!("unexpected monitor response: {response:?}"),
+                }
+            }
         })
         .await
         .context("workload termination deadline; cleanup remains unknown")?
@@ -1211,6 +1302,28 @@ pub struct Outcome(pub Completion);
 
 impl Outcome {
     pub fn code(&self) -> Result<u32> {
+        self.diagnostics();
+        match self.0.leader {
+            LeaderResult::Exit { code } => Ok(code),
+            LeaderResult::Signal { signal, .. } => Ok(128 + signal),
+            ref unknown => bail!("workload has no confirmed exit status: {unknown:?}"),
+        }
+    }
+
+    /// Confirm stop without inventing a native status for a cancelled launch.
+    pub fn confirm_stopped(&self) -> Result<()> {
+        if self.0.cause == madrillo::CompletionCause::LaunchCancelled
+            && self.0.cleanup == madrillo::CleanupResult::Complete
+            && self.0.leader == LeaderResult::Unknown
+        {
+            self.diagnostics();
+            Ok(())
+        } else {
+            self.code().map(|_| ())
+        }
+    }
+
+    fn diagnostics(&self) {
         for error in self.0.log_errors.iter().chain(&self.0.monitor_errors) {
             eprintln!("madrillo: {error}");
         }
@@ -1225,11 +1338,6 @@ impl Outcome {
         }
         if self.0.output_truncated {
             eprintln!("madrillo: console output was truncated");
-        }
-        match self.0.leader {
-            LeaderResult::Exit { code } => Ok(code),
-            LeaderResult::Signal { signal, .. } => Ok(128 + signal),
-            ref unknown => bail!("workload has no confirmed exit status: {unknown:?}"),
         }
     }
 }

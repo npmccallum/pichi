@@ -58,7 +58,9 @@ preserve the VM's native exit status.
 
 `pichi rm ID` removes one completed workload's retained files. It refuses live
 workloads, unconfirmed cleanup, active host imports and unexpected top-level
-files. Success echoes the supplied ID or prefix. An absent target exits 1,
+files. Inside `monitor`, only regular `console.log`, `result.json` and `oom`
+files are removed; unfamiliar entries are preserved, including on a retired
+record retry. Success echoes the supplied ID or prefix. An absent target exits 1,
 a refused or failed removal exits 2, and other errors exit 125.
 A publication lock passed to Madrillo protects completion publication even
 with older installed monitors. Records created before that ownership evidence

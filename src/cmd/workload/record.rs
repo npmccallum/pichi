@@ -437,7 +437,10 @@ impl Records {
                         "identity.json" | "monitor.err" | "build.lock" | "cleanup.lock"
                         | "publication.lock",
                     ) => kind.is_file(),
-                    Some("monitor") => kind.is_dir(),
+                    Some("monitor") => {
+                        Self::check_monitor(&directory)?;
+                        true
+                    }
                     _ => false,
                 };
                 ensure!(known, "unexpected file in retired workload {id}");
@@ -451,6 +454,23 @@ impl Records {
         result.with_context(|| {
             format!("removing retired workload metadata; retry with pichi rm {id}")
         })
+    }
+
+    fn check_monitor(directory: &Dir) -> Result<()> {
+        let monitor = directory.open_dir_nofollow("monitor")?;
+        for entry in monitor.entries()? {
+            let entry = entry?;
+            // Madrillo also retains an OOM sentinel when the kernel reports it.
+            ensure!(
+                matches!(
+                    entry.file_name().to_str(),
+                    Some("console.log" | "result.json" | "oom")
+                ) && entry.file_type()?.is_file(),
+                "unexpected file in workload monitor: {:?}",
+                entry.file_name()
+            );
+        }
+        Ok(())
     }
 
     /// Retire a workload after its payload is gone. Caller holds the index lock
@@ -639,7 +659,11 @@ impl Record {
                     "identity.json" | "monitor.err" | "build.lock" | "cleanup.lock"
                     | "publication.lock",
                 ) => kind.is_file(),
-                Some("monitor" | "storage") => kind.is_dir(),
+                Some("monitor") => {
+                    Records::check_monitor(&self.run.directory)?;
+                    true
+                }
+                Some("storage") => kind.is_dir(),
                 Some("output") => {
                     ensure!(
                         owner.is_some(),
@@ -1038,8 +1062,15 @@ mod tests {
         // An interrupted deletion may have removed identity.json already.
         std::fs::create_dir(retired.join("monitor"))?;
         std::fs::write(retired.join("monitor/result.json"), b"remaining metadata")?;
+        std::fs::write(retired.join("monitor/oom"), b"")?;
         assert!(records.list()?.is_empty());
-        for name in ["storage", "output", "foreign"] {
+        for name in [
+            "storage",
+            "output",
+            "foreign",
+            "monitor/foreign",
+            "monitor/console.log",
+        ] {
             std::fs::create_dir(retired.join(name))?;
             let payload = retired.join(name).join("data");
             std::fs::write(&payload, b"preserve")?;
@@ -1559,10 +1590,13 @@ mod tests {
         // The documented migration preserves old output outside the record.
         let preserved = root.path().join("preserved-output");
         std::fs::rename(path.join("output"), &preserved)?;
-        std::fs::write(path.join("foreign"), b"not ours")?;
-        assert!(Record::at(&path)?.remove(&records).is_err());
-        assert_eq!(std::fs::read(path.join("foreign"))?, b"not ours");
-        std::fs::remove_file(path.join("foreign"))?;
+        for name in ["foreign", "monitor/foreign"] {
+            std::fs::write(path.join(name), b"not ours")?;
+            assert!(Record::at(&path)?.remove(&records).is_err());
+            assert_eq!(std::fs::read(path.join(name))?, b"not ours");
+            std::fs::remove_file(path.join(name))?;
+        }
+        std::fs::write(path.join("monitor/oom"), b"")?;
         // A still-published record without its identity is corrupt, not an
         // already-removed record that the exit callback may silently accept.
         let identity = std::fs::read(path.join("identity.json"))?;
@@ -1577,6 +1611,13 @@ mod tests {
             std::os::unix::fs::symlink(&preserved, path.join("storage"))?;
             assert!(Record::at(&path)?.remove(&records).is_err());
             std::fs::remove_file(path.join("storage"))?;
+            std::os::unix::fs::symlink(
+                preserved.join("partial"),
+                path.join("monitor/console.log"),
+            )?;
+            assert!(Record::at(&path)?.remove(&records).is_err());
+            assert!(path.join("monitor/console.log").is_symlink());
+            std::fs::remove_file(path.join("monitor/console.log"))?;
         }
         Record::at(&path)?.remove(&records)?;
         assert!(!path.exists());

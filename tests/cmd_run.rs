@@ -911,14 +911,7 @@ async fn create_retains_a_private_disk_and_pinned_image() {
     let tmp = TempDir::new().unwrap();
     let root = graphroot(&tmp);
     let (pmi, scute) = populate_bootable(&root, "created:1").await;
-    let pichi = || {
-        let mut command = Command::cargo_bin("pichi").unwrap();
-        command
-            .env("XDG_DATA_HOME", tmp.path())
-            .env("PATH", tmp.path())
-            .env("MADRILLO_BIN", tmp.path().join("no-monitor"));
-        command
-    };
+    let pichi = || create_command(&tmp);
     let created = pichi()
         .args([
             "create",
@@ -986,13 +979,7 @@ async fn create_rejects_invalid_configuration_before_publishing() {
         })),
     )
     .await;
-    let pichi = || {
-        let mut command = Command::cargo_bin("pichi").unwrap();
-        command
-            .env("XDG_DATA_HOME", tmp.path())
-            .env("PATH", tmp.path());
-        command
-    };
+    let pichi = || create_command(&tmp);
     for args in [
         vec!["--cpus", "1"],
         vec!["--memory", "1m"],
@@ -1013,7 +1000,10 @@ async fn create_rejects_invalid_configuration_before_publishing() {
     std::fs::create_dir(config.path().join("pichi")).unwrap();
     std::fs::write(
         config.path().join("pichi/config.toml"),
-        "[run]\nmemory_mib = 129\n",
+        format!(
+            "[storage]\ngraphroot = {}\n[run]\nmemory_mib = 129\n",
+            serde_json::to_string(&root).unwrap()
+        ),
     )
     .unwrap();
     let refused = pichi()
@@ -1059,9 +1049,7 @@ async fn create_rejects_a_non_utf8_canonical_storage_path() {
     let root = tmp.path().join("pichi/storage");
     symlink(&real, &root).unwrap();
     populate_bootable(&root, "created:1").await;
-    let refused = Command::cargo_bin("pichi")
-        .unwrap()
-        .env("XDG_DATA_HOME", tmp.path())
+    let refused = create_command(&tmp)
         .args(["create", "created:1", "--storage", "2m"])
         .assert()
         .code(125);
@@ -1073,4 +1061,23 @@ async fn create_rejects_a_non_utf8_canonical_storage_path() {
         b"cache-\xff.workloads".to_vec(),
     ));
     assert_eq!(std::fs::read_dir(records).unwrap().count(), 0);
+}
+
+fn create_command(tmp: &TempDir) -> Command {
+    std::fs::write(
+        tmp.path().join("pichi/config.toml"),
+        format!(
+            "[storage]\ngraphroot = {}\n",
+            serde_json::to_string(&tmp.path().join("pichi/storage")).unwrap()
+        ),
+    )
+    .unwrap();
+    let mut command = Command::cargo_bin("pichi").unwrap();
+    command
+        .env("XDG_DATA_HOME", tmp.path())
+        .env("XDG_CONFIG_HOME", tmp.path())
+        .env("APPDATA", tmp.path())
+        .env("PATH", tmp.path())
+        .env("MADRILLO_BIN", tmp.path().join("no-monitor"));
+    command
 }
